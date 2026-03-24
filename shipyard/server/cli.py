@@ -101,13 +101,28 @@ def _handle_event(event_type: str | None, data: dict):
             click.echo(f"\u2192 {data.get('instruction', '')}")
         elif status == "complete":
             click.echo("\n\u2713 Done")
+        elif status == "error":
+            click.echo("\n\u2717 Completed with errors")
     elif event_type == "message":
         content = data.get("content", "")
-        click.echo(content)
+        click.echo(content, nl=False)  # nl=False for streaming tokens
+    elif event_type == "tool_call":
+        tool = data.get("tool", "?")
+        args = data.get("args", {})
+        # Show a concise summary of the tool call
+        args_summary = ", ".join(f"{k}={repr(v)[:50]}" for k, v in args.items())
+        click.echo(f"\n\U0001f527 {tool}({args_summary})")
+    elif event_type == "tool_result":
+        tool = data.get("tool", "?")
+        output = data.get("output", "")
+        # Show truncated output
+        if len(output) > 200:
+            output = output[:200] + "..."
+        click.echo(f"   \u2192 {output}")
     elif event_type == "error":
-        click.echo(f"\u2717 Error: {data.get('message', data)}", err=True)
+        click.echo(f"\n\u2717 Error: {data.get('message', data)}", err=True)
     elif event_type == "done":
-        pass  # handled by status complete
+        pass  # handled by status
     else:
         # Unknown event type — print raw
         click.echo(json.dumps(data, indent=2))
