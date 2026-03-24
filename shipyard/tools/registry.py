@@ -1,4 +1,4 @@
-from functools import partial
+from functools import wraps
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
@@ -85,7 +85,12 @@ class ToolRegistry:
 
     def _make_tool(self, name: str, description: str, func, input_model) -> StructuredTool:
         """Create a StructuredTool with project_root pre-injected."""
-        bound_func = partial(func, project_root=self.project_root)
+        project_root = self.project_root
+
+        @wraps(func)
+        async def bound_func(**kwargs):
+            kwargs["project_root"] = project_root
+            return await func(**kwargs)
 
         return StructuredTool.from_function(
             coroutine=bound_func,
