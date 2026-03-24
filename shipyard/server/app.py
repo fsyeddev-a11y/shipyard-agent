@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -5,8 +7,27 @@ import json
 
 from shipyard.agent.supervisor import run_agent
 from shipyard.config import get_config
+from shipyard.session.manager import SessionManager
+from shipyard.session.recovery import check_interrupted_sessions
 
-app = FastAPI(title="Shipyard", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle."""
+    config = get_config()
+    # Ensure .shipyard directories exist
+    config.sessions_path.mkdir(parents=True, exist_ok=True)
+    config.notes_path.mkdir(parents=True, exist_ok=True)
+
+    # Check for interrupted sessions
+    interrupted = check_interrupted_sessions(config)
+    if interrupted:
+        for info in interrupted:
+            print(f"Warning: Interrupted session: {info.session_id} — last instruction: {info.last_instruction[:80]}")
+    yield
+
+
+app = FastAPI(title="Shipyard", version="0.1.0", lifespan=lifespan)
 
 
 # --- Request/Response Models ---
@@ -91,7 +112,10 @@ async def instruct(request: InstructRequest):
                 elif event_type == "done":
                     yield {
                         "event": "done",
-                        "data": json.dumps({"status": "complete"})
+                        "data": json.dumps({
+                            "status": "complete",
+                            "session_id": event.get("session_id", ""),
+                        })
                     }
 
                 elif event_type == "error":
@@ -118,8 +142,8 @@ async def inject(request: InjectRequest):
     """
     Inject context into a running agent session.
 
-    Phase 1 stub: acknowledges the injection.
-    Phase 4+: adds to the context manager's injection queue.
+    MVP: acknowledges the injection. Full integration requires sharing
+    state with the running agent's context manager.
     """
     return {
         "status": "queued",
@@ -131,25 +155,46 @@ async def inject(request: InjectRequest):
 
 @app.get("/session/list")
 async def session_list():
-    """List all sessions. Stub: returns empty list."""
-    return {"sessions": []}
+    """List all sessions from disk."""
+    config = get_config()
+    sm = SessionManager(config)
+    sessions = sm.list_sessions()
+    return {"sessions": sessions}
 
 
 @app.post("/session/new")
 async def session_new():
-    """Create a new session. Stub: returns a mock session ID."""
+    """Create a new session."""
     import uuid
     return {"session_id": str(uuid.uuid4()), "status": "created"}
 
 
 @app.get("/session/{session_id}")
 async def session_get(session_id: str):
-    """Get session details. Stub: returns mock data."""
+    """Get session details."""
+    config = get_config()
+    sm = SessionManager(config)
+    events = sm.get_session_events(session_id)
+    if not events:
+        return {
+            "session_id": session_id,
+            "status": "not_found",
+            "message": "Session not found",
+        }
     return {
         "session_id": session_id,
-        "status": "not_found",
-        "message": "Session management not yet implemented",
+        "status": "found",
+        "event_count": len(events),
     }
+
+
+@app.get("/session/{session_id}/export")
+async def session_export(session_id: str):
+    """Export a session as readable markdown."""
+    config = get_config()
+    sm = SessionManager(config)
+    markdown = sm.export_session(session_id)
+    return {"session_id": session_id, "export": markdown}
 
 
 @app.get("/health")

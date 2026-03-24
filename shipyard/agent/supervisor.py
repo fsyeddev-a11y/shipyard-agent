@@ -3,11 +3,14 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
-from pathlib import Path
 
 from shipyard.agent.llm import get_llm
 from shipyard.tools.registry import ToolRegistry
 from shipyard.config import ShipyardConfig
+from shipyard.session.manager import SessionManager
+from shipyard.session.events import InstructionEvent, TaskCompleteEvent
+from shipyard.context.manager import ContextManager
+from shipyard.middleware.hooks import AgentMiddleware
 
 
 # --- State ---
@@ -37,7 +40,7 @@ Project root: {project_root}
 
 # --- Graph Construction ---
 
-def create_agent_graph(config: ShipyardConfig):
+def create_agent_graph(config: ShipyardConfig, middleware: AgentMiddleware | None = None):
     """
     Create the single-agent LangGraph graph.
 
@@ -46,6 +49,7 @@ def create_agent_graph(config: ShipyardConfig):
 
     Args:
         config: ShipyardConfig with LLM and project settings
+        middleware: Optional AgentMiddleware for logging/accounting
 
     Returns:
         A compiled LangGraph StateGraph ready to invoke
@@ -57,10 +61,23 @@ def create_agent_graph(config: ShipyardConfig):
     model = llm.bind_tools(tools)
 
     # 2. Define nodes
-    def agent_node(state: AgentState) -> dict:
-        """Call the LLM with the current message history."""
+    async def agent_node(state: AgentState) -> dict:
+        """Call the LLM with current messages, with middleware hooks."""
+        if middleware:
+            await middleware.before_llm_call()
+
         messages = state["messages"]
-        response = model.invoke(messages)
+        response = await model.ainvoke(messages)
+
+        if middleware:
+            # Extract token usage from response metadata if available
+            usage = getattr(response, "usage_metadata", None) or {}
+            middleware.after_llm_call(
+                model=config.model_name,
+                input_tokens=usage.get("input_tokens", 0) if isinstance(usage, dict) else getattr(usage, "input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0) if isinstance(usage, dict) else getattr(usage, "output_tokens", 0),
+            )
+
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -107,9 +124,17 @@ async def run_agent(instruction: str, config: ShipyardConfig):
         - {"type": "tool_call", "tool": name, "args": {...}}
         - {"type": "tool_result", "tool": name, "output": "..."}
         - {"type": "token", "content": "..."}
-        - {"type": "done"}
+        - {"type": "done", "session_id": "..."}
     """
-    graph = create_agent_graph(config)
+    # Set up session, context, and middleware
+    session_mgr = SessionManager(config)
+    session_id = session_mgr.start_session()
+    context_mgr = ContextManager(config)
+    middleware = AgentMiddleware(session_mgr, context_mgr, config)
+
+    session_mgr.log_event(InstructionEvent(content=instruction))
+
+    graph = create_agent_graph(config, middleware=middleware)
 
     system_msg = SystemMessage(content=SYSTEM_PROMPT.format(
         project_root=str(config.project_root)
@@ -139,7 +164,18 @@ async def run_agent(instruction: str, config: ShipyardConfig):
             # ToolMessage output can be a string or have .content
             if hasattr(tool_output, "content"):
                 tool_output = tool_output.content
-            yield {"type": "tool_result", "tool": tool_name, "output": str(tool_output)[:500]}
+            output_str = str(tool_output)
 
-    # Final message
-    yield {"type": "done"}
+            # Log tool call via middleware
+            middleware.after_tool_call(
+                tool_name,
+                event.get("data", {}).get("input", {}),
+                output_str,
+            )
+
+            yield {"type": "tool_result", "tool": tool_name, "output": output_str[:500]}
+
+    # Log task completion
+    session_mgr.log_event(TaskCompleteEvent(summary="Task completed"))
+
+    yield {"type": "done", "session_id": session_id}
