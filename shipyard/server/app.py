@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-import asyncio
 import json
+
+from shipyard.agent.supervisor import run_agent
+from shipyard.config import get_config
 
 app = FastAPI(title="Shipyard", version="0.1.0")
 
@@ -33,23 +35,80 @@ class SessionInfo(BaseModel):
 @app.post("/instruct")
 async def instruct(request: InstructRequest):
     """
-    Accept an instruction and stream the response via SSE.
-
-    Phase 1 stub: echoes the instruction back as a series of SSE events.
-    Phase 3+: wires into the supervisor agent loop.
+    Accept an instruction and stream the agent's response via SSE.
     """
+    config = get_config()
+
+    # Validate API key early
+    if not config.openrouter_api_key:
+        async def error_generator():
+            yield {"event": "error", "data": json.dumps({"message": "SHIPYARD_OPENROUTER_API_KEY is not set"})}
+            yield {"event": "done", "data": json.dumps({"status": "error"})}
+        return EventSourceResponse(error_generator())
+
     async def event_generator():
-        # Stub: echo back the instruction in chunks
-        yield {"event": "status", "data": json.dumps({"status": "received", "instruction": request.instruction})}
+        # Signal that we received the instruction
+        yield {
+            "event": "status",
+            "data": json.dumps({"status": "received", "instruction": request.instruction})
+        }
 
-        await asyncio.sleep(0.1)  # simulate processing
+        instruction = request.instruction
 
-        yield {"event": "message", "data": json.dumps({"content": f"Echo: {request.instruction}"})}
-
+        # If context was attached, prepend it to the instruction
         if request.context:
-            yield {"event": "message", "data": json.dumps({"content": f"Received {len(request.context)} context attachment(s)"})}
+            context_block = "\n\n---\nAttached context:\n" + "\n---\n".join(request.context)
+            instruction = instruction + context_block
 
-        yield {"event": "done", "data": json.dumps({"status": "complete"})}
+        try:
+            async for event in run_agent(instruction, config):
+                event_type = event.get("type", "unknown")
+
+                if event_type == "token":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({"content": event["content"]})
+                    }
+
+                elif event_type == "tool_call":
+                    yield {
+                        "event": "tool_call",
+                        "data": json.dumps({
+                            "tool": event["tool"],
+                            "args": event.get("args", {})
+                        })
+                    }
+
+                elif event_type == "tool_result":
+                    yield {
+                        "event": "tool_result",
+                        "data": json.dumps({
+                            "tool": event["tool"],
+                            "output": event.get("output", "")
+                        })
+                    }
+
+                elif event_type == "done":
+                    yield {
+                        "event": "done",
+                        "data": json.dumps({"status": "complete"})
+                    }
+
+                elif event_type == "error":
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({"message": event.get("message", "Unknown error")})
+                    }
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": str(e)})
+            }
+            yield {
+                "event": "done",
+                "data": json.dumps({"status": "error"})
+            }
 
     return EventSourceResponse(event_generator())
 
