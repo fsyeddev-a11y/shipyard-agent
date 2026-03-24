@@ -6,7 +6,7 @@ from pathlib import Path
 class ShipyardConfig(BaseSettings):
     """Central configuration for the Shipyard agent."""
 
-    model_config = {"env_prefix": "SHIPYARD_"}
+    model_config = {"env_prefix": "SHIPYARD_", "env_file": ".env", "env_file_encoding": "utf-8"}
 
     # Server
     host: str = "127.0.0.1"

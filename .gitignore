@@ -5,6 +5,10 @@ PRESEARCH.md
 REQUIREMENTS.md
 shipyard_prd.pdf
 
+# Secrets
+.env
+.env.*
+
 # Python
 __pycache__/
 *.py[cod]
