@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from shipyard.edit_engine.normalize import normalize_for_edit
+from shipyard.edit_engine.normalize import normalize_for_edit, detect_style
 from shipyard.edit_engine.diff import compute_unified_diff, verify_diff, diff_summary
 from shipyard.edit_engine.git import git_commit
 
@@ -70,16 +70,27 @@ def apply_edit(
 
     # Step 3: Normalize new_content to match file style
     normalized_new = normalize_for_edit(new_content, original_content)
+    # Preserve trailing-newline parity with old_content (we're replacing a fragment, not a whole file)
+    if not old_content.endswith("\n") and normalized_new.endswith("\n"):
+        normalized_new = normalized_new.rstrip("\n")
+    elif old_content.endswith("\n") and not normalized_new.endswith("\n"):
+        style = detect_style(original_content)
+        normalized_new += style.line_ending
 
     # Step 4: Replace
     modified_content = original_content.replace(old_content, normalized_new, 1)
 
     # Step 5: Compute and verify diff
     rel_path = _relative_path(file_path, project_root)
-    diff = compute_unified_diff(original_content, modified_content, file_path=rel_path)
+    context_lines = 3
+    diff = compute_unified_diff(original_content, modified_content, file_path=rel_path, context_lines=context_lines)
     summary = diff_summary(diff) if diff else "+0 -0 lines"
 
-    verification = verify_diff(diff, start_line, end_line, max_changed_lines)
+    # Expand anchor boundaries by context lines to account for diff context
+    total_lines = original_content.count("\n")
+    verify_start = max(0, start_line - context_lines)
+    verify_end = min(total_lines, end_line + context_lines)
+    verification = verify_diff(diff, verify_start, verify_end, max_changed_lines)
     if not verification.passed:
         return EditResult(
             success=False,
@@ -155,6 +166,12 @@ def apply_edit_multi(
 
         # Normalize new_content against original file style
         normalized_new = normalize_for_edit(new, original_content)
+        # Preserve trailing-newline parity with old_content
+        if not old.endswith("\n") and normalized_new.endswith("\n"):
+            normalized_new = normalized_new.rstrip("\n")
+        elif old.endswith("\n") and not normalized_new.endswith("\n"):
+            style = detect_style(original_content)
+            normalized_new += style.line_ending
         char_offset = original_content.index(old)
         validated.append((old, normalized_new, char_offset))
 
