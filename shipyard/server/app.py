@@ -9,6 +9,7 @@ from shipyard.agent.supervisor import run_agent
 from shipyard.config import get_config
 from shipyard.session.manager import SessionManager
 from shipyard.session.recovery import check_interrupted_sessions
+from shipyard.tracing import setup_langsmith
 
 
 @asynccontextmanager
@@ -18,6 +19,13 @@ async def lifespan(app: FastAPI):
     # Ensure .shipyard directories exist
     config.sessions_path.mkdir(parents=True, exist_ok=True)
     config.notes_path.mkdir(parents=True, exist_ok=True)
+
+    # Enable LangSmith tracing if configured
+    tracing = setup_langsmith(config)
+    if tracing:
+        print(f"LangSmith tracing enabled (project: {config.langsmith_project})")
+    else:
+        print("LangSmith tracing disabled")
 
     # Check for interrupted sessions
     interrupted = check_interrupted_sessions(config)
@@ -115,6 +123,7 @@ async def instruct(request: InstructRequest):
                         "data": json.dumps({
                             "status": "complete",
                             "session_id": event.get("session_id", ""),
+                            "trace_url": event.get("trace_url", ""),
                         })
                     }
 

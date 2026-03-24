@@ -4,6 +4,8 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 
+import uuid
+
 from shipyard.agent.llm import get_llm
 from shipyard.tools.registry import ToolRegistry
 from shipyard.config import ShipyardConfig
@@ -11,6 +13,7 @@ from shipyard.session.manager import SessionManager
 from shipyard.session.events import InstructionEvent, TaskCompleteEvent
 from shipyard.context.manager import ContextManager
 from shipyard.middleware.hooks import AgentMiddleware
+from shipyard.tracing import is_tracing_enabled, get_trace_url
 
 
 # --- State ---
@@ -134,6 +137,9 @@ async def run_agent(instruction: str, config: ShipyardConfig):
 
     session_mgr.log_event(InstructionEvent(content=instruction))
 
+    # Generate a run_id for trace linking
+    run_id = str(uuid.uuid4())
+
     graph = create_agent_graph(config, middleware=middleware)
 
     system_msg = SystemMessage(content=SYSTEM_PROMPT.format(
@@ -143,8 +149,18 @@ async def run_agent(instruction: str, config: ShipyardConfig):
 
     initial_state = {"messages": [system_msg, human_msg]}
 
+    # Configure run with metadata for LangSmith
+    run_config = {
+        "run_id": run_id,
+        "metadata": {
+            "session_id": session_id,
+            "instruction": instruction[:200],
+        },
+        "tags": ["shipyard", "single-agent"],
+    }
+
     # Stream graph execution
-    async for event in graph.astream_events(initial_state, version="v2"):
+    async for event in graph.astream_events(initial_state, version="v2", config=run_config):
         kind = event.get("event")
 
         if kind == "on_chat_model_stream":
@@ -175,7 +191,12 @@ async def run_agent(instruction: str, config: ShipyardConfig):
 
             yield {"type": "tool_result", "tool": tool_name, "output": output_str[:500]}
 
+    # Build trace URL if tracing is enabled
+    trace_url = ""
+    if is_tracing_enabled():
+        trace_url = get_trace_url(run_id, config)
+
     # Log task completion
     session_mgr.log_event(TaskCompleteEvent(summary="Task completed"))
 
-    yield {"type": "done", "session_id": session_id}
+    yield {"type": "done", "session_id": session_id, "trace_url": trace_url}

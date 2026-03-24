@@ -99,8 +99,6 @@ def _handle_event(event_type: str | None, data: dict):
         status = data.get("status", "")
         if status == "received":
             click.echo(f"\u2192 {data.get('instruction', '')}")
-        elif status == "complete":
-            click.echo("\n\u2713 Done")
         elif status == "error":
             click.echo("\n\u2717 Completed with errors")
     elif event_type == "message":
@@ -122,7 +120,12 @@ def _handle_event(event_type: str | None, data: dict):
     elif event_type == "error":
         click.echo(f"\n\u2717 Error: {data.get('message', data)}", err=True)
     elif event_type == "done":
-        pass  # handled by status
+        status = data.get("status", "")
+        if status == "complete":
+            click.echo("\n\u2713 Done")
+            trace_url = data.get("trace_url", "")
+            if trace_url:
+                click.echo(f"  Trace: {trace_url}")
     else:
         # Unknown event type — print raw
         click.echo(json.dumps(data, indent=2))
