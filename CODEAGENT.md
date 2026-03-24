@@ -233,15 +233,172 @@ The edit engine has 36 unit tests covering:
 
 ## Multi-Agent Design
 
-*Placeholder — not implemented in MVP. See REQUIREMENTS.md REQ-5 and CODEAGENT-PLAN.md for the planned supervisor/worker architecture with file partitioning, shared orchestrator state, merge agent, and project-wide validation.*
+*Not yet implemented — planned for Phase 5. Architecture designed and documented below.*
+
+### Overview
+
+The multi-agent system uses a **supervisor + worker** pattern with **file partitioning** to eliminate merge conflicts. Workers operate on disjoint file sets in parallel. Shared files are handled via deferred change requests applied by a merge agent after all workers complete.
+
+### Supervisor Graph
+
+The supervisor is a LangGraph `StateGraph` that orchestrates the full lifecycle:
+
+```
+decompose → dispatch → monitor → merge_gate → merge_agent → validate_project → report
+                                                                    ↓
+                                                               replan (on failure, up to 3×)
+```
+
+| Node | Purpose |
+|------|---------|
+| `decompose` | LLM breaks instruction into subtasks with explicit file ownership per worker. Decides `"parallel"` vs `"direct"` mode. |
+| `dispatch` | Spawns worker subgraphs via `asyncio.gather()`. Passes `parent_run_id` for LangSmith trace nesting. |
+| `monitor` | Polls worker heartbeats in shared state. Detects timeouts (default: 120s). |
+| `merge_gate` | Collects worker results and pending `change_requests` from shared state. |
+| `merge_agent` | LLM reads all change requests for each shared file, produces combined edits, applies via edit engine. |
+| `validate_project` | Runs `tsc --noEmit` or equivalent project-wide check. |
+| `report` | Summarizes results to user. |
+| `replan` | On validation failure, reads errors, revises decomposition or dispatches fix-up tasks. Circuit breaker at 3 replans. |
+| `execute_direct` | Simple task bypass — supervisor executes directly without spawning workers (single-file changes). |
+
+**Supervisor state:**
+
+```python
+class SupervisorState(TypedDict):
+    instruction: str
+    subtasks: list[Subtask]
+    worker_results: dict[str, WorkerResult]
+    change_requests: list[ChangeRequest]
+    validation_result: Optional[ValidationResult]
+    replan_count: int  # circuit breaker
+    max_replans: int   # default: 3
+```
+
+**Decomposition output:**
+
+```json
+{
+  "mode": "parallel",
+  "subtasks": [
+    {"id": "auth-api", "instruction": "...", "files_owned": ["auth.ts"], "files_readable": ["types.ts"]},
+    {"id": "auth-ui", "instruction": "...", "files_owned": ["LoginForm.tsx"], "files_readable": ["types.ts"]}
+  ],
+  "shared_files": ["types/index.ts", "package.json"]
+}
+```
+
+Validation rules: no file appears in two workers' `files_owned`; all owned files exist; shared files excluded from all ownership.
+
+### Worker Subgraphs
+
+Each worker is a LangGraph `StateGraph` with its own ReAct loop:
+
+| Node | Purpose | Transitions |
+|------|---------|-------------|
+| `plan` | Read assigned files, produce edit plan | → `execute` |
+| `execute` | Call tools (read_file, edit_file, search_files, etc.) | → `validate` |
+| `validate` | Check if edit succeeded | → `execute` (retry, max 3), → `complete`, → `failed` |
+| `complete` | Report results to shared state | → END |
+| `failed` | Report failure, circuit breaker triggered | → END |
+
+**Worker state:**
+
+```python
+class WorkerState(TypedDict):
+    subtask: Subtask
+    files_owned: list[str]
+    files_readable: list[str]
+    edit_plan: list[PlannedEdit]
+    edits_completed: int
+    retry_count: int    # per current edit target, max 3
+```
+
+### File Ownership Enforcement
+
+Enforced at the tool layer via `ToolRegistry`. When `files_owned` is set:
+- `edit_file` on a non-owned file → returns error string: `"✗ Ownership error: {file} is not owned by this worker. Use request_shared_edit instead."`
+- `create_file` on a non-owned path → same error
+- `read_file` works on any file (workers need to read context)
+- This is already implemented and tested (E-2.7)
+
+### Shared Orchestrator State
+
+In-memory Python object shared between supervisor and workers. Safe with async Python (cooperative yielding, no preemptive threads):
+
+```python
+class OrchestratorState:
+    worker_status: dict[str, WorkerStatus]    # worker_id → phase, current_file, edits_completed, last_update
+    change_requests: list[ChangeRequest]       # deferred shared file edits from workers
+    worker_results: dict[str, WorkerResult]    # worker_id → diffs produced, files modified, validation status
+```
+
+**Worker heartbeat:** After each major step, workers update `worker_status` with their current phase, file, and timestamp. The supervisor's `monitor` node checks `last_update` against the timeout threshold.
+
+### Shared File Handling
+
+Workers cannot edit shared files directly. Instead:
+1. Worker calls `request_shared_edit(file_path, description, old_content, new_content)`
+2. This adds a `ChangeRequest` to `orchestrator_state.change_requests` — the file is NOT modified
+3. After all workers complete, the merge agent collects all requests grouped by file
+4. For each shared file, the merge agent LLM reads current contents + all change requests, produces combined edits
+5. Combined edits applied via the edit engine with diff verification
+
+### Communication Flow
+
+```
+Supervisor                    Worker A              Worker B
+    │                            │                     │
+    ├── decompose ──────────────►│                     │
+    ├── dispatch (gather) ──────►├── plan              │
+    │                            ├── execute           ├── plan
+    │                            ├── validate          ├── execute
+    │                            ├── complete ────────►│  ├── validate
+    │  ◄── results ──────────────┘                     ├── complete
+    │  ◄── results ────────────────────────────────────┘
+    ├── merge_gate
+    ├── merge_agent (shared files)
+    ├── validate_project (tsc --noEmit)
+    └── report
+```
+
+---
+
+## Architecture Decisions
+
+| Decision | Alternatives Considered | Chosen | Rationale |
+|----------|------------------------|--------|-----------|
+| **Agent framework** | Custom async loop, AutoGen, CrewAI | LangGraph (Python) | Mature state machine semantics with explicit node/edge control. Automatic LangSmith tracing without extra instrumentation. Built-in `ToolNode` and `add_messages` reducer handle the ReAct pattern cleanly. The library authors themselves recommend manual implementation over their higher-level `langgraph-supervisor` abstraction — we need fine-grained control over context engineering. |
+| **File editing** | AST-based (ts-morph), unified diff as input, line-range replacement | Anchor-based (`old_content` → `new_content`) with unified diff verification | AST editing is language-specific and too complex for a one-week sprint. LLMs are unreliable at producing correctly formatted unified diffs (malformed `@@` headers, wrong context lines). Line-range replacement is fragile — line numbers drift after any edit. Anchor-based forces the LLM to state what it thinks exists in the file, catching stale context immediately. No line number dependency. The unified diff is generated *after* replacement as a verification layer, not as the edit mechanism. |
+| **Server architecture** | REPL/CLI loop, WebSocket server | FastAPI + thin CLI client | Persistent process stays alive between instructions — no cold start per task. SSE streaming gives real-time progress. Separates the agent runtime from the user interface. Supports future multi-agent communication via HTTP endpoints. The CLI is a thin `click` + `httpx` wrapper — the server does all the work. |
+| **Multi-agent conflict prevention** | Optimistic locking, file-level locks, merge resolution after conflict | File partitioning (disjoint ownership) | True file conflicts cannot occur when workers own disjoint file sets. Semantic conflicts (API shape mismatches between files) are caught by the project-wide typecheck after all workers finish. Simpler than lock-based approaches and eliminates an entire class of merge failures. Shared files handled separately via deferred change requests + merge agent. |
+| **Session storage** | SQLite, PostgreSQL, in-memory | JSONL append-only files | Crash-safe by design (append-only, no transactions to corrupt). Human-readable with `cat`. Doubles as the rebuild log for deliverables. One file per session in `/.shipyard/sessions/`. SQLite deferred to post-MVP if cross-session query needs arise (can be rebuilt from JSONL). |
+| **Observability** | Custom logging, OpenTelemetry, Weights & Biases | LangSmith | Automatic tracing from LangGraph — every node, LLM call, and tool invocation captured without extra code. Shareable trace links for submission. `@traceable` decorator available for manual nesting when needed (e.g., worker subgraphs). Environment variable activation (`LANGCHAIN_TRACING_V2=true`) means tracing can be toggled without code changes. |
+| **LLM provider** | OpenRouter (model-agnostic proxy), direct Anthropic SDK | OpenAI API directly | Company-provided API keys. `ChatOpenAI` from `langchain-openai` provides native tool-calling support, streaming, and token counting. Model swappable via `SHIPYARD_MODEL_NAME` env var (gpt-4o, gpt-4.1-mini, etc.) without code changes. |
+| **Whitespace handling** | Trust LLM output as-is, post-process all files | Detect-and-normalize per edit | LLMs frequently add/drop trailing spaces, change indentation style, or mix line endings. The normalize module detects the file's conventions (tabs vs spaces, indent size, `\n` vs `\r\n`) and converts `new_content` to match before applying. Conservative — only converts on clear mismatch. Trailing whitespace stripped unconditionally. |
 
 ---
 
 ## Trace Links
 
-*Placeholder — to be populated with shareable LangSmith trace URLs demonstrating:*
-1. *Normal run: instruction → read → edit → verify → commit*
-2. *Error/retry path: anchor not found → retry with corrected anchor → success*
+### Trace 1: Normal Run (single-file edit)
+
+**Instruction:** "Change the add function in src/utils.ts to subtract instead of add"
+
+**Tool call sequence:** `list_files` → `read_file` → `edit_file` → done
+
+**Trace:** https://smith.langchain.com/public/f8fa7596-3fa8-44c2-a5f3-82ee1e00c061/r
+
+Shows the full ReAct cycle: agent reasons about the task, reads the file to get current contents, produces an `edit_file` call with correct `old_content`/`new_content`, edit engine applies the change, diff is verified, git commit is created.
+
+### Trace 2: Error/Discovery Path (function not found)
+
+**Instruction:** "Update the function processPayment in src/app.ts to add logging"
+
+**Tool call sequence:** `search_files` → `search_files` → `list_files` → `read_file` → done (no edit — function doesn't exist)
+
+**Trace:** https://smith.langchain.com/public/6bd2307c-9274-4568-b771-7921d9e7a535/r
+
+Shows the agent's error handling: searches for `processPayment`, can't find it, reads the file to confirm, correctly concludes the function doesn't exist and reports back without making any changes. Demonstrates that the agent doesn't blindly edit when the target is missing.
 
 ---
 
