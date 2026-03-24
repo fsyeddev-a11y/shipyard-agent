@@ -40,9 +40,9 @@ async def instruct(request: InstructRequest):
     config = get_config()
 
     # Validate API key early
-    if not config.openrouter_api_key:
+    if not config.openai_api_key:
         async def error_generator():
-            yield {"event": "error", "data": json.dumps({"message": "SHIPYARD_OPENROUTER_API_KEY is not set"})}
+            yield {"event": "error", "data": json.dumps({"message": "SHIPYARD_OPENAI_API_KEY is not set"})}
             yield {"event": "done", "data": json.dumps({"status": "error"})}
         return EventSourceResponse(error_generator())
 

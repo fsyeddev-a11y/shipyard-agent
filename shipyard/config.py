@@ -12,9 +12,9 @@ class ShipyardConfig(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    # LLM (OpenRouter)
-    openrouter_api_key: str = ""
-    model_name: str = "anthropic/claude-sonnet-4-20250514"
+    # LLM (OpenAI)
+    openai_api_key: str = ""
+    model_name: str = "gpt-4o"
     model_context_window: int = 200_000
     response_headroom_pct: float = 0.20  # reserve 20% for response
 
