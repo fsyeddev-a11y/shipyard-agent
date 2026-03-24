@@ -1,0 +1,29 @@
+# Planning/research docs (not part of the codebase)
+CLAUDE.md
+CODEAGENT-PLAN.md
+PRESEARCH.md
+REQUIREMENTS.md
+shipyard_prd.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Shipyard runtime data
+.shipyard/
