@@ -386,7 +386,7 @@ Supervisor                    Worker A              Worker B
 
 **Tool call sequence:** `list_files` → `read_file` → `edit_file` → done
 
-**Trace:** https://smith.langchain.com/public/f8fa7596-3fa8-44c2-a5f3-82ee1e00c061/r
+**Trace:** https://smith.langchain.com/public/4c370744-b3ab-482c-8da4-2afc2b1211e6/r
 
 Shows the full ReAct cycle: agent reasons about the task, reads the file to get current contents, produces an `edit_file` call with correct `old_content`/`new_content`, edit engine applies the change, diff is verified, git commit is created.
 
@@ -396,7 +396,7 @@ Shows the full ReAct cycle: agent reasons about the task, reads the file to get 
 
 **Tool call sequence:** `search_files` → `search_files` → `list_files` → `read_file` → done (no edit — function doesn't exist)
 
-**Trace:** https://smith.langchain.com/public/6bd2307c-9274-4568-b771-7921d9e7a535/r
+**Trace:** https://smith.langchain.com/public/677b942b-5bf5-4d4e-9178-df8bf27aa8cd/r
 
 Shows the agent's error handling: searches for `processPayment`, can't find it, reads the file to confirm, correctly concludes the function doesn't exist and reports back without making any changes. Demonstrates that the agent doesn't blindly edit when the target is missing.
 
