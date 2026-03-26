@@ -229,6 +229,11 @@ The edit engine has 36 unit tests covering:
 - Error handling (missing function), context injection
 - Large file edit (300+ lines), file precision (untouched files)
 
+**Known eval gaps** (planned, not yet implemented — see `docs/evals/specs/04-06`):
+- Large files (1000+ lines), edits near file boundaries, sequential edits with context drift
+- Realistic TypeScript (React components, import graphs, generics, JSX)
+- Anchor stress testing (near-duplicate functions, same code in different scopes, ambiguity resolution)
+
 ---
 
 ## Multi-Agent Design
