@@ -36,6 +36,10 @@ class ShipyardConfig(BaseSettings):
     max_notes: int = 20
     max_note_tokens: int = 2000
 
+    # Pricing
+    cost_per_million_input: float = 2.50    # USD per 1M input tokens
+    cost_per_million_output: float = 10.00  # USD per 1M output tokens
+
     # LangSmith
     langsmith_api_key: str = ""
     langsmith_project: str = "shipyard"

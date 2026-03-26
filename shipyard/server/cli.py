@@ -131,6 +131,78 @@ def _handle_event(event_type: str | None, data: dict):
         click.echo(json.dumps(data, indent=2))
 
 
+# --- Usage subcommand ---
+
+
+@main.command("usage")
+@click.option("--detail", is_flag=True, help="Show per-session breakdown")
+@click.option("--offline", is_flag=True, help="Read JSONL directly without server")
+@click.option("--session-id", default=None, help="Filter to a specific session")
+@click.pass_context
+def usage_cmd(ctx, detail, offline, session_id):
+    """Show token usage and cost report."""
+    if offline:
+        from shipyard.config import get_config as _get_config
+        from shipyard.session.usage import calculate_usage
+
+        config = _get_config()
+        report = calculate_usage(config, session_id=session_id).model_dump()
+    else:
+        base_url = ctx.obj["base_url"]
+        params = {}
+        if session_id:
+            params["session_id"] = session_id
+        try:
+            resp = httpx.get(f"{base_url}/usage", params=params)
+            report = resp.json()
+        except httpx.ConnectError:
+            click.echo("Error: cannot connect to server. Use --offline to read directly.", err=True)
+            sys.exit(1)
+
+    _print_usage_report(report, detail=detail)
+
+
+def _print_usage_report(report: dict, detail: bool = False):
+    """Pretty-print a usage report."""
+    click.echo("Shipyard Usage Report")
+    click.echo("\u2500" * 37)
+    click.echo(
+        f"Sessions: {report['session_count']}    "
+        f"LLM calls: {report['llm_call_count']}"
+    )
+    click.echo()
+
+    # Per-model table
+    by_model = report.get("by_model", [])
+    if by_model:
+        click.echo(f"{'Model':<15}{'Input':>10}{'Output':>10}{'Cost':>10}")
+        for m in by_model:
+            click.echo(
+                f"{m['model']:<15}"
+                f"{m['input_tokens']:>10,}"
+                f"{m['output_tokens']:>10,}"
+                f"{'$' + f'{m[\"cost\"]:.2f}':>10}"
+            )
+        click.echo()
+
+    total_tokens = report["total_input_tokens"] + report["total_output_tokens"]
+    click.echo(
+        f"Total tokens: {total_tokens:,}    "
+        f"Est. cost: ${report['total_cost']:.2f}"
+    )
+    click.echo("\u2500" * 37)
+
+    if detail:
+        click.echo()
+        click.echo("Per-session breakdown:")
+        for s in report.get("by_session", []):
+            click.echo(
+                f"  {s['session_id']}  "
+                f"in={s['input_tokens']:,}  out={s['output_tokens']:,}  "
+                f"calls={s['llm_calls']}  cost=${s['cost']:.2f}"
+            )
+
+
 # --- Session subcommands ---
 
 
