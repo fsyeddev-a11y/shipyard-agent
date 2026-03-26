@@ -9,6 +9,7 @@ from shipyard.agent.supervisor import run_agent
 from shipyard.config import get_config
 from shipyard.session.manager import SessionManager
 from shipyard.session.recovery import check_interrupted_sessions
+from shipyard.session.usage import calculate_usage
 from shipyard.tracing import setup_langsmith
 
 
@@ -204,6 +205,14 @@ async def session_export(session_id: str):
     sm = SessionManager(config)
     markdown = sm.export_session(session_id)
     return {"session_id": session_id, "export": markdown}
+
+
+@app.get("/usage")
+async def usage(session_id: str | None = None):
+    """Return aggregated token usage and cost report."""
+    config = get_config()
+    report = calculate_usage(config, session_id=session_id)
+    return report.model_dump()
 
 
 @app.get("/health")
