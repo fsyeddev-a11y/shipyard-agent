@@ -12,27 +12,36 @@ class ShipyardCLI(click.Group):
     """Custom group that treats unknown args as instructions."""
 
     def parse_args(self, ctx, args):
-        # If the first arg isn't a known command, treat all non-option args as instruction
-        if args and args[0] not in self.commands and not args[0].startswith("-"):
-            # Find where options start
-            instruction_parts = []
-            remaining = []
-            found_opts = False
-            for arg in args:
-                if arg.startswith("-") or found_opts:
-                    found_opts = True
-                    remaining.append(arg)
-                else:
-                    instruction_parts.append(arg)
-            # Rejoin as instruction and put back
-            if instruction_parts:
-                ctx.params["_instruction"] = " ".join(instruction_parts)
-                args = remaining
+        # Separate known options/commands from the instruction text
+        # Known options that take a value after them
+        opts_with_value = {"--base-url", "-c", "--context", "-s", "--session"}
+        opts_flags = {"--help"}
+
+        instruction_parts = []
+        remaining = []
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in opts_with_value and i + 1 < len(args):
+                remaining.append(arg)
+                remaining.append(args[i + 1])
+                i += 2
+            elif arg.startswith("-"):
+                remaining.append(arg)
+                i += 1
+            elif arg in self.commands:
+                # It's a subcommand — put it and everything after into remaining
+                remaining.extend(args[i:])
+                break
             else:
-                ctx.params["_instruction"] = None
+                instruction_parts.append(arg)
+                i += 1
+
+        if instruction_parts:
+            ctx.params["_instruction"] = " ".join(instruction_parts)
         else:
             ctx.params["_instruction"] = None
-        return super().parse_args(ctx, args)
+        return super().parse_args(ctx, remaining)
 
 
 @click.group(cls=ShipyardCLI, invoke_without_command=True)
