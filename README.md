@@ -35,7 +35,7 @@ All agent runs are traced via LangSmith. Each link shows the full execution path
 | Ship Rebuild | Helm Build 1: full-stack scaffolding, database setup, API routes | [View trace](https://smith.langchain.com/public/93b66638-6a3f-42f7-a079-318166c921df/r) |
 | Ship Rebuild (recursion limit) | Complex restructuring hit the 25-message circuit breaker | [View trace](https://smith.langchain.com/public/6e6cce4c-2846-4db0-a631-e66ee8cd65ec/r) |
 | Ship Rebuild (components) | Create Layout, DocumentCard, CreateDocumentForm components | [View trace](https://smith.langchain.com/public/4138a4c9-d215-4d73-a5a1-43de7a4a5083/r) |
-| Ship Rebuild (fix wiring) | Move pages to correct directory, fix imports — sent while agent was still working | [View trace](https://smith.langchain.com/public/3b0b64f9-3447-4efd-97d0-8ba9cb1bb419/r) |
+| Ship Rebuild (fix wiring) | Move pages to correct directory, fix imports — sent while agent was still working on above create components prompt to test persistent loop (agent accepts instructions and runs continuously) | [View trace](https://smith.langchain.com/public/3b0b64f9-3447-4efd-97d0-8ba9cb1bb419/r) |
 
 ## Stack
 
