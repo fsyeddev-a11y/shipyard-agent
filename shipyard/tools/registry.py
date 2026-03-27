@@ -9,6 +9,8 @@ from shipyard.tools.create_file import create_file, CreateFileInput
 from shipyard.tools.list_files import list_files, ListFilesInput
 from shipyard.tools.search_files import search_files, SearchFilesInput
 from shipyard.tools.run_command import run_command, RunCommandInput
+from shipyard.tools.move_file import move_file, MoveFileInput
+from shipyard.tools.delete_file import delete_file, DeleteFileInput
 
 
 class ToolRegistry:
@@ -79,6 +81,18 @@ class ToolRegistry:
                 "Execute a shell command and return stdout/stderr. Output is truncated if longer than 200 lines.",
                 run_command,
                 RunCommandInput,
+            ),
+            self._make_tool(
+                "move_file",
+                "Move or rename a file. Creates parent directories if needed. Auto-commits to git.",
+                move_file,
+                MoveFileInput,
+            ),
+            self._make_tool(
+                "delete_file",
+                "Delete a file. Auto-commits the deletion to git. Use run_command with rm -rf for directories.",
+                delete_file,
+                DeleteFileInput,
             ),
         ]
         return tools

@@ -54,10 +54,16 @@ def apply_edit(
     if count == 0:
         lines = original_content.splitlines(keepends=True)
         context = "".join(lines[:100])
+        # Check if old_content looks like it has line numbers from read_file
+        hint = ""
+        if " | " in old_content[:20]:
+            hint = " HINT: Your old_content appears to contain line number prefixes from read_file output. Use only the raw file text without line numbers."
+        elif not old_content.strip():
+            hint = " HINT: old_content is empty or whitespace-only. Use create_file for new content, or provide the actual text you want to replace."
         return EditResult(
             success=False,
             error="anchor_not_found",
-            error_detail=f"old_content not found in {file_path}",
+            error_detail=f"old_content not found in {file_path}.{hint} Try reading the file again and copying the exact text.",
             file_context=context,
         )
 
@@ -65,7 +71,7 @@ def apply_edit(
         return EditResult(
             success=False,
             error="ambiguous_anchor",
-            error_detail=f"old_content found {count} times in {file_path}. Include more surrounding context.",
+            error_detail=f"old_content found {count} times in {file_path}. Include more surrounding lines of context to make the match unique. Do NOT retry with the same old_content.",
         )
 
     # Step 3: Normalize new_content to match file style
@@ -97,7 +103,7 @@ def apply_edit(
             diff=diff,
             diff_summary=summary,
             error="verification_failed",
-            error_detail=verification.reason,
+            error_detail=f"{verification.reason}. The edit was NOT applied. Try a different approach — use a smaller, more targeted old_content anchor, or break the edit into smaller pieces.",
         )
 
     # Step 6: Write and commit
@@ -197,7 +203,7 @@ def apply_edit_multi(
             diff=diff,
             diff_summary=summary,
             error="verification_failed",
-            error_detail=verification.reason,
+            error_detail=f"{verification.reason}. The edit was NOT applied. Try a different approach — use a smaller, more targeted old_content anchor, or break the edit into smaller pieces.",
         )
 
     # Step 6: Write and commit
