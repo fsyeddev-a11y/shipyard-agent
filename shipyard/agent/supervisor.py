@@ -90,9 +90,15 @@ SYSTEM_PROMPT = """You are Shipyard, an autonomous coding agent. You make surgic
 27. If verification fails, fix the issue before creating more files. Errors compound when ignored.
 28. If you cannot complete a file after 3 attempts, skip it. Write a note to .shipyard/notes/issues.md explaining what went wrong and what you tried. Move to the next file.
 
+## Status Protocol (machine-read — do not skip)
+29. ALWAYS end .shipyard/notes/progress.md with exactly one of these on its own line:
+    - `STATUS: IN_PROGRESS` — more work remains from the plan
+    - `STATUS: COMPLETE` — ALL specs/tasks are fully implemented and verified
+    This line is read by the auto-continue system. If you omit it, the system assumes IN_PROGRESS and will re-run you.
+
 ## Finishing
-29. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
-30. When all implementation is truly complete (or budget is exhausted), update .shipyard/notes/progress.md one final time, then briefly confirm what you did and stop.
+30. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
+31. When all implementation is truly complete (or budget is exhausted), update .shipyard/notes/progress.md one final time with STATUS: COMPLETE or STATUS: IN_PROGRESS, then briefly confirm what you did and stop.
 
 Project root: {project_root}
 """
@@ -291,3 +297,98 @@ async def run_agent(instruction: str, config: ShipyardConfig):
     session_mgr.log_event(TaskCompleteEvent(summary="Task completed"))
 
     yield {"type": "done", "session_id": session_id, "trace_url": trace_url}
+
+
+# --- Auto-Continue Loop ---
+
+MAX_LOOP_ITERATIONS = 10
+
+
+def _read_progress_file(config: ShipyardConfig) -> str:
+    """Read .shipyard/notes/progress.md from disk. Returns empty string if not found."""
+    progress_path = config.shipyard_path / "notes" / "progress.md"
+    if progress_path.exists():
+        return progress_path.read_text(encoding="utf-8")
+    return ""
+
+
+def _is_complete(progress_content: str) -> bool:
+    """Check if progress.md signals completion."""
+    return "STATUS: COMPLETE" in progress_content
+
+
+def _build_continue_message(
+    original_instruction: str,
+    progress_content: str,
+    iteration: int,
+) -> str:
+    """Build a deterministic continue message. No LLM call — pure string construction."""
+    return (
+        f"Continue working on the original task. This is auto-continue iteration {iteration}.\n\n"
+        f"## Original instruction\n{original_instruction[:500]}\n\n"
+        f"## Current progress (from .shipyard/notes/progress.md)\n{progress_content}\n\n"
+        "Resume from where you left off. Read .shipyard/notes/plan.md and progress.md for context, "
+        "then continue implementing the next incomplete spec. Do NOT re-plan or re-do completed work. "
+        "When ALL work is complete, update progress.md with STATUS: COMPLETE on its own line at the end."
+    )
+
+
+async def run_agent_loop(instruction: str, config: ShipyardConfig):
+    """
+    Auto-continue wrapper around run_agent().
+
+    Runs the agent, then checks .shipyard/notes/progress.md.
+    If STATUS: COMPLETE is not found, constructs a continue message
+    and re-runs. Max MAX_LOOP_ITERATIONS iterations.
+
+    Yields the same event types as run_agent(), plus:
+    - {"type": "continue", "iteration": N, "max": MAX_LOOP_ITERATIONS}
+
+    Args:
+        instruction: The user's original instruction
+        config: ShipyardConfig
+
+    Yields:
+        Same dict events as run_agent, plus "continue" events between iterations
+    """
+    for iteration in range(1, MAX_LOOP_ITERATIONS + 1):
+        # Determine the instruction for this iteration
+        if iteration == 1:
+            current_instruction = instruction
+        else:
+            progress_content = _read_progress_file(config)
+            current_instruction = _build_continue_message(
+                original_instruction=instruction,
+                progress_content=progress_content,
+                iteration=iteration,
+            )
+
+        # Run the agent for this iteration
+        last_done_event = None
+        async for event in run_agent(current_instruction, config):
+            if event.get("type") == "done":
+                last_done_event = event
+                break  # Don't yield done yet — check if we should continue
+            yield event
+
+        # Check progress.md for STATUS: COMPLETE
+        progress_content = _read_progress_file(config)
+        if _is_complete(progress_content):
+            # All done — yield the final done event
+            if last_done_event:
+                yield last_done_event
+            return
+
+        # Not complete — check if we have iterations remaining
+        if iteration >= MAX_LOOP_ITERATIONS:
+            # Max iterations reached — yield done and stop
+            if last_done_event:
+                yield last_done_event
+            return
+
+        # Yield continue event and loop
+        yield {
+            "type": "continue",
+            "iteration": iteration + 1,
+            "max": MAX_LOOP_ITERATIONS,
+        }

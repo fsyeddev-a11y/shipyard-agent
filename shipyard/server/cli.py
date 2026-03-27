@@ -156,6 +156,10 @@ def _handle_event(event_type: str | None, data: dict):
         if len(output) > 200:
             output = output[:200] + "..."
         click.echo(f"   \u2192 {output}")
+    elif event_type == "continue":
+        iteration = data.get("iteration", "?")
+        max_iter = data.get("max", "?")
+        click.echo(f"\n--- Continuing... iteration {iteration}/{max_iter} ---\n")
     elif event_type == "error":
         click.echo(f"\n\u2717 Error: {data.get('message', data)}", err=True)
     elif event_type == "done":

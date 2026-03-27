@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 import json
 
-from shipyard.agent.supervisor import run_agent
+from shipyard.agent.supervisor import run_agent_loop
 from shipyard.config import get_config
 from shipyard.session.manager import SessionManager
 from shipyard.session.recovery import check_interrupted_sessions
@@ -91,7 +91,7 @@ async def instruct(request: InstructRequest):
             instruction = instruction + context_block
 
         try:
-            async for event in run_agent(instruction, config):
+            async for event in run_agent_loop(instruction, config):
                 event_type = event.get("type", "unknown")
 
                 if event_type == "token":
@@ -125,6 +125,15 @@ async def instruct(request: InstructRequest):
                             "status": "complete",
                             "session_id": event.get("session_id", ""),
                             "trace_url": event.get("trace_url", ""),
+                        })
+                    }
+
+                elif event_type == "continue":
+                    yield {
+                        "event": "continue",
+                        "data": json.dumps({
+                            "iteration": event.get("iteration", 0),
+                            "max": event.get("max", 10),
                         })
                     }
 
