@@ -8,25 +8,55 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 
 
-@click.group(invoke_without_command=True)
-@click.argument("instruction", required=False)
+class ShipyardCLI(click.Group):
+    """Custom group that treats unknown args as instructions."""
+
+    def parse_args(self, ctx, args):
+        # If the first arg isn't a known command, treat all non-option args as instruction
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            # Find where options start
+            instruction_parts = []
+            remaining = []
+            found_opts = False
+            for arg in args:
+                if arg.startswith("-") or found_opts:
+                    found_opts = True
+                    remaining.append(arg)
+                else:
+                    instruction_parts.append(arg)
+            # Rejoin as instruction and put back
+            if instruction_parts:
+                ctx.params["_instruction"] = " ".join(instruction_parts)
+                args = remaining
+            else:
+                ctx.params["_instruction"] = None
+        else:
+            ctx.params["_instruction"] = None
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=ShipyardCLI, invoke_without_command=True)
 @click.option("--base-url", default=DEFAULT_BASE_URL, envvar="SHIPYARD_URL", help="Server URL")
 @click.option("--context", "-c", multiple=True, help="Attach context (file path or inline text)")
 @click.option("--session", "-s", default=None, help="Resume a specific session ID")
 @click.pass_context
-def main(ctx, instruction, base_url, context, session):
+def main(ctx, base_url, context, session, _instruction=None):
     """Shipyard — autonomous coding agent.
 
     Send an instruction:  shipyard "add email validation to signup"
-    With context:         shipyard "implement this spec" -c spec.md
+    With context:         shipyard -c spec.md "implement this spec"
     Session commands:     shipyard session list
+    Usage report:         shipyard usage --offline
     """
     ctx.ensure_object(dict)
     ctx.obj["base_url"] = base_url
+    instruction = _instruction
 
+    if ctx.invoked_subcommand:
+        return
     if instruction:
         _send_instruction(base_url, instruction, list(context), session)
-    elif not ctx.invoked_subcommand:
+    else:
         click.echo(ctx.get_help())
 
 
@@ -181,7 +211,7 @@ def _print_usage_report(report: dict, detail: bool = False):
                 f"{m['model']:<15}"
                 f"{m['input_tokens']:>10,}"
                 f"{m['output_tokens']:>10,}"
-                f"{'$' + f'{m[\"cost\"]:.2f}':>10}"
+                f"{'$' + str(round(m['cost'], 2)):>10}"
             )
         click.echo()
 
