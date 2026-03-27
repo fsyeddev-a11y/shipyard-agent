@@ -526,6 +526,76 @@ The system prompt overhaul worked for **behavioral** issues (planning, vertical 
 
 ---
 
+## Build 3 / 3.2: Helm — Autonomous Single-Prompt Build
+
+**Date:** 2026-03-27
+**Project:** helm-v3 / helm-v3.2 — same HELM-BUILD1.md PRD, rewritten for autonomous execution
+**Model:** gpt-4o
+
+### Changes Since Build 2
+
+**System prompt v4→v5 (major overhaul):**
+- PRD-Driven Workflow section: agent reads PRD, breaks into specs, writes plan to notes
+- Progress Checkpoints (mandatory): write checkpoint at start and end of every spec
+- Resume support: agent reads notes at session start, picks up where last session stopped
+- Removed hardcoded `packages/` rule — replaced with discovery-based path resolution
+
+**New tools:**
+- `write_note` and `read_notes` — agent self-tracks plan, progress, and issues in `.shipyard/notes/`
+- Total tools: 11 (was 9)
+
+**Smart circuit breaker (replaces flat 50-message limit):**
+- Hard gate: 100 messages (~50 LLM turns). Absolute ceiling.
+- Soft gate: 5 consecutive unproductive turns → stop. Productive = successful file create/edit/move/delete/write_note. Failed edits count as unproductive.
+- LangGraph recursion_limit raised to 200 to match.
+- Why: Build 2 hit the old 25-step LangGraph limit on every complex instruction. The agent could only do ~12 LLM turns total — not enough for multi-file work with verification. The new breaker allows ~50 productive turns while still catching infinite retry loops.
+
+**PRD rewrite:**
+- Path-free instructions — agent decides directory structure during planning phase
+- sql.js explicitly specified (not better-sqlite3), with mapping requirements
+- ASCII wireframes for all 3 pages with Tailwind classes
+- 10-item verification checklist
+- Agent writes plan/progress/issues to `.shipyard/notes/`
+
+**CLI fix:**
+- `-c` flag now works before or after the instruction text
+
+### Build 3 (helm-v3) — First Attempt
+
+Single prompt with PRD attached. Agent completed 6 of 8 specs before hitting old recursion limit:
+
+| Spec | Status | Notes |
+|------|--------|-------|
+| 1. Monorepo scaffolding | ✓ | All files in packages/, correct structure |
+| 2. Shared types | ✓ | |
+| 3. Database (sql.js) | ✓ | |
+| 4. API routes | ✓ | |
+| 5. API client | ✓ | |
+| 6. Components | ✓ | Layout, DocumentCard, CreateDocumentForm |
+| 7. Pages + routing | ✗ | Hit recursion limit |
+| 8. Verification | ✗ | Not reached |
+
+**Key improvements over Build 2:**
+- Agent wrote a full plan to `.shipyard/notes/plan.md` before coding
+- Zero file placement issues — all files in correct directories
+- Agent chose its own package names (backend/frontend/shared vs api/web/shared)
+- 0 interventions for specs 1-6 (Build 2 needed 5 interventions for the same work)
+
+**What went wrong:**
+- Hit LangGraph's default 25-step recursion limit (our custom 50-message breaker wasn't the bottleneck — LangGraph's own limit was lower)
+- No progress.md written — agent didn't checkpoint before running out of budget
+- Follow-up prompts needed 2 more sessions to finish pages (each hit the limit again)
+
+This triggered the smart circuit breaker implementation.
+
+### Build 3.2 (helm-v3.2) — With Smart Circuit Breaker
+
+**Status:** In progress. Testing with new 100-message hard limit and 5-turn unproductive soft limit.
+
+*Results to be filled in after completion.*
+
+---
+
 ## Comparison Template (for final submission)
 
 After each build iteration, fill in:
