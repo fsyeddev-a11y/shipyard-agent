@@ -8,6 +8,11 @@ class WriteNoteInput(BaseModel):
     content: str = Field(description="Note content in markdown")
 
 
+class AppendNoteInput(BaseModel):
+    topic: str = Field(description="Note topic — appends to existing file (e.g., 'progress')")
+    content: str = Field(description="Content to append")
+
+
 class ReadNotesInput(BaseModel):
     topic: str | None = Field(default=None, description="Specific topic to read. If omitted, lists all available notes with summaries.")
 
@@ -43,6 +48,44 @@ async def write_note(
 
     note_path.write_text(content, encoding="utf-8")
     return f"✓ Note saved: .shipyard/notes/{safe_topic}.md ({len(content)} chars)"
+
+
+async def append_note(
+    topic: str,
+    content: str,
+    project_root: Path,
+) -> str:
+    """
+    Append content to an existing note. Creates the file if it doesn't exist.
+    Use for progress tracking — each update adds to the log instead of replacing it.
+    """
+    notes_dir = project_root / ".shipyard" / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_topic = "".join(c if c.isalnum() or c in "-_" else "-" for c in topic).strip("-")
+    if not safe_topic:
+        return "✗ Invalid topic name"
+
+    note_path = notes_dir / f"{safe_topic}.md"
+
+    existing_notes = list(notes_dir.glob("*.md"))
+    if not note_path.exists() and len(existing_notes) >= 20:
+        return "✗ Note limit reached (20). Delete old notes before creating new ones."
+
+    # Append with a timestamp separator
+    from datetime import datetime, timezone
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    entry = f"\n\n---\n**[{timestamp}]**\n{content}"
+
+    if note_path.exists():
+        existing = note_path.read_text(encoding="utf-8")
+        if len(existing) + len(entry) > 50000:
+            return f"✗ Note would exceed 50,000 chars. Start a new note or trim the existing one."
+        note_path.write_text(existing + entry, encoding="utf-8")
+    else:
+        note_path.write_text(content + entry, encoding="utf-8")
+
+    return f"✓ Appended to .shipyard/notes/{safe_topic}.md"
 
 
 async def read_notes(

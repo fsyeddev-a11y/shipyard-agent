@@ -109,8 +109,37 @@ def _send_instruction(
         sys.exit(1)
 
 
+class StatusTracker:
+    """Tracks agent activity for display."""
+
+    def __init__(self):
+        self.iteration = 1
+        self.max_iterations = 10
+        self.tool_calls = 0
+        self.edits = 0
+        self.files_created = 0
+        self.current_tool = ""
+        self.last_spec = ""
+
+    def _print_status_bar(self):
+        """Print a single-line status bar."""
+        bar = (
+            f"  [{self.iteration}/{self.max_iterations}] "
+            f"tools: {self.tool_calls}  edits: {self.edits}  created: {self.files_created}"
+        )
+        if self.last_spec:
+            bar += f"  spec: {self.last_spec[:30]}"
+        # Print on its own line with a dimmed style
+        click.echo(click.style(bar, fg="bright_black"))
+
+
+_tracker = StatusTracker()
+
+
 def _stream_sse(response: httpx.Response):
     """Parse SSE stream and print events to stdout."""
+    global _tracker
+    _tracker = StatusTracker()
     event_type = None
 
     for line in response.iter_lines():
@@ -137,40 +166,69 @@ def _handle_event(event_type: str | None, data: dict):
     if event_type == "status":
         status = data.get("status", "")
         if status == "received":
-            click.echo(f"\u2192 {data.get('instruction', '')}")
+            click.echo(f"\u2192 {data.get('instruction', '')[:100]}")
         elif status == "error":
             click.echo("\n\u2717 Completed with errors")
     elif event_type == "message":
         content = data.get("content", "")
-        click.echo(content, nl=False)  # nl=False for streaming tokens
+        click.echo(content, nl=False)
     elif event_type == "tool_call":
+        _tracker.tool_calls += 1
         tool = data.get("tool", "?")
         args = data.get("args", {})
-        # Show a concise summary of the tool call
+        _tracker.current_tool = tool
+
+        # Track productive actions
+        if tool == "create_file":
+            _tracker.files_created += 1
+        elif tool in ("edit_file", "edit_file_multi"):
+            _tracker.edits += 1
+
+        # Track spec progress from write_note/append_note calls
+        if tool in ("write_note", "append_note") and args.get("topic") == "progress":
+            content = args.get("content", "")
+            # Try to extract spec info
+            for line in content.split("\n"):
+                if "spec" in line.lower() or "Spec" in line:
+                    _tracker.last_spec = line.strip()[:40]
+                    break
+
         args_summary = ", ".join(f"{k}={repr(v)[:50]}" for k, v in args.items())
         click.echo(f"\n\U0001f527 {tool}({args_summary})")
     elif event_type == "tool_result":
         tool = data.get("tool", "?")
         output = data.get("output", "")
-        # Show truncated output
         if len(output) > 200:
             output = output[:200] + "..."
         click.echo(f"   \u2192 {output}")
+        _tracker._print_status_bar()
     elif event_type == "continue":
         iteration = data.get("iteration", "?")
         max_iter = data.get("max", "?")
-        click.echo(f"\n--- Continuing... iteration {iteration}/{max_iter} ---\n")
+        _tracker.iteration = iteration
+        _tracker.max_iterations = max_iter
+        click.echo(click.style(
+            f"\n{'='*60}\n"
+            f"  AUTO-CONTINUE: iteration {iteration}/{max_iter}\n"
+            f"  Tools so far: {_tracker.tool_calls}  |  Edits: {_tracker.edits}  |  Created: {_tracker.files_created}\n"
+            f"{'='*60}\n",
+            fg="cyan",
+        ))
     elif event_type == "error":
         click.echo(f"\n\u2717 Error: {data.get('message', data)}", err=True)
     elif event_type == "done":
         status = data.get("status", "")
         if status == "complete":
-            click.echo("\n\u2713 Done")
+            click.echo(click.style(
+                f"\n\u2713 Done  |  Iterations: {_tracker.iteration}  |  "
+                f"Tools: {_tracker.tool_calls}  |  Edits: {_tracker.edits}  |  "
+                f"Created: {_tracker.files_created}",
+                fg="green", bold=True,
+            ))
             trace_url = data.get("trace_url", "")
             if trace_url:
                 click.echo(f"  Trace: {trace_url}")
     else:
-        # Unknown event type — print raw
         click.echo(json.dumps(data, indent=2))
 
 
