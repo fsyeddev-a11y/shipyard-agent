@@ -224,6 +224,10 @@ def _find_anchor(content: str, anchor: str) -> tuple[int, int, int]:
     - start_line: 0-based line number where anchor starts (valid only if count == 1)
     - end_line: 0-based line number where anchor ends (valid only if count == 1)
     """
+    # Empty anchor matches everywhere — reject it
+    if not anchor:
+        return (0, -1, -1)
+
     count = content.count(anchor)
     if count != 1:
         return (count, -1, -1)

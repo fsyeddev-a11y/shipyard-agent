@@ -20,6 +20,23 @@ User (CLI) → FastAPI Server → Session Manager → Agent (LangGraph ReAct) �
 
 **Session logging:** All events (instructions, tool calls, edits, LLM calls with token counts) are logged to append-only JSONL files for full auditability and cost tracking.
 
+## Traces
+
+All agent runs are traced via LangSmith. Each link shows the full execution path — LLM reasoning, tool calls, tool results, and timing.
+
+| Trace | Description | Link |
+|-------|-------------|------|
+| Surgical Edit | Cross-file refactor: add soft-delete to User type, update deleteUser, propagate checks | [View trace](https://smith.langchain.com/public/9a1d7b59-78f2-42b1-93fc-826177bb8711/r) |
+| Search and Discovery | Find all getUserById call sites, add deletedAt checks in each | [View trace](https://smith.langchain.com/public/276523cc-f95b-42ef-972b-1424f6978773/r) |
+| File Creation | Create validators.ts with three validation functions from scratch | [View trace](https://smith.langchain.com/public/7e12c9a8-b331-4e7f-9ed8-e31dfcfd5173/r) |
+| Context Injection | Apply JSDoc style guide (attached via -c flag) to projects.ts | [View trace](https://smith.langchain.com/public/d30b19cb-2910-44bd-9777-093edf8abe0e/r) |
+| Error Handling | Agent asked to edit non-existent function — searches, reports not found, no files touched | [View trace](https://smith.langchain.com/public/ca4b0de2-5e12-41a8-8808-730301b13e05/r) |
+| Run Command | List all TypeScript files and count total lines of code | [View trace](https://smith.langchain.com/public/4759d6bb-45b4-4862-a6a2-f5110e00226c/r) |
+| Ship Rebuild | Helm Build 1: full-stack scaffolding, database setup, API routes | [View trace](https://smith.langchain.com/public/93b66638-6a3f-42f7-a079-318166c921df/r) |
+| Ship Rebuild (recursion limit) | Complex restructuring hit the 25-message circuit breaker | [View trace](https://smith.langchain.com/public/6e6cce4c-2846-4db0-a631-e66ee8cd65ec/r) |
+| Ship Rebuild (components) | Create Layout, DocumentCard, CreateDocumentForm components | [View trace](https://smith.langchain.com/public/4138a4c9-d215-4d73-a5a1-43de7a4a5083/r) |
+| Ship Rebuild (fix wiring) | Move pages to correct directory, fix imports — sent while agent was still working | [View trace](https://smith.langchain.com/public/3b0b64f9-3447-4efd-97d0-8ba9cb1bb419/r) |
+
 ## Stack
 
 | Component | Technology |
