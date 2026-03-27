@@ -11,6 +11,7 @@ from shipyard.tools.search_files import search_files, SearchFilesInput
 from shipyard.tools.run_command import run_command, RunCommandInput
 from shipyard.tools.move_file import move_file, MoveFileInput
 from shipyard.tools.delete_file import delete_file, DeleteFileInput
+from shipyard.tools.notes import write_note, read_notes, WriteNoteInput, ReadNotesInput
 
 
 class ToolRegistry:
@@ -93,6 +94,18 @@ class ToolRegistry:
                 "Delete a file. Auto-commits the deletion to git. Use run_command with rm -rf for directories.",
                 delete_file,
                 DeleteFileInput,
+            ),
+            self._make_tool(
+                "write_note",
+                "Write a note to .shipyard/notes/{topic}.md. Use for: plans, progress tracking, issues, project context. Overwrites if topic exists.",
+                write_note,
+                WriteNoteInput,
+            ),
+            self._make_tool(
+                "read_notes",
+                "Read notes from .shipyard/notes/. Pass a topic to read one note, or omit to list all notes with summaries.",
+                read_notes,
+                ReadNotesInput,
             ),
         ]
         return tools
