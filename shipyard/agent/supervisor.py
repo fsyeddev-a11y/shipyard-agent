@@ -16,6 +16,15 @@ from shipyard.middleware.hooks import AgentMiddleware
 from shipyard.tracing import is_tracing_enabled, get_trace_url
 
 
+# --- Circuit Breaker Config ---
+
+HARD_MESSAGE_LIMIT = 100       # Absolute max messages (~50 LLM turns). Never exceeded.
+SOFT_UNPRODUCTIVE_LIMIT = 5    # Stop after N consecutive unproductive turns (failed edits, retries)
+
+# Tools that count as "productive" — they change something on disk
+PRODUCTIVE_TOOLS = {"edit_file", "edit_file_multi", "create_file", "move_file", "delete_file", "write_note"}
+
+
 # --- State ---
 
 class AgentState(TypedDict):
@@ -132,15 +141,47 @@ def create_agent_graph(config: ShipyardConfig, middleware: AgentMiddleware | Non
 
     tool_node = ToolNode(tools)
 
-    # 3. Define routing
+    # 3. Define routing with smart circuit breaker
     def should_continue(state: AgentState) -> str:
-        """Route to tools or end. Includes circuit breaker."""
-        if len(state["messages"]) > 50:
-            return "end"  # circuit breaker
-        last_message = state["messages"][-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            return "tools"
-        return "end"
+        """Route to tools or end. Two-tier circuit breaker: hard limit + unproductive streak."""
+        messages = state["messages"]
+
+        # Hard gate: absolute max messages
+        if len(messages) > HARD_MESSAGE_LIMIT:
+            return "end"
+
+        # Check if LLM wants to call tools
+        last_message = messages[-1]
+        if not (hasattr(last_message, "tool_calls") and last_message.tool_calls):
+            return "end"
+
+        # Soft gate: count consecutive unproductive turns
+        # Walk backwards through messages to find recent tool results
+        unproductive_streak = 0
+        for msg in reversed(messages):
+            if hasattr(msg, "name") and hasattr(msg, "content"):
+                # This is a ToolMessage — check if the tool was productive
+                tool_name = getattr(msg, "name", "")
+                content = str(getattr(msg, "content", ""))
+                if tool_name in PRODUCTIVE_TOOLS:
+                    if content.startswith("✓"):
+                        # Successful productive action — reset streak
+                        break
+                    else:
+                        # Failed productive action (error) — count as unproductive
+                        unproductive_streak += 1
+                # Non-productive tools (read_file, list_files, etc.) don't affect the streak
+            elif hasattr(msg, "tool_calls"):
+                # LLM message with tool calls — skip
+                continue
+            else:
+                # Regular LLM message — skip
+                continue
+
+            if unproductive_streak >= SOFT_UNPRODUCTIVE_LIMIT:
+                return "end"
+
+        return "tools"
 
     # 4. Build graph
     graph = StateGraph(AgentState)
@@ -197,8 +238,10 @@ async def run_agent(instruction: str, config: ShipyardConfig):
     initial_state = {"messages": [system_msg, human_msg]}
 
     # Configure run with metadata for LangSmith
+    # Set recursion_limit high — our custom circuit breaker handles stopping
     run_config = {
         "run_id": run_id,
+        "recursion_limit": HARD_MESSAGE_LIMIT * 2,  # LangGraph recursion limit (graph steps, not messages)
         "metadata": {
             "session_id": session_id,
             "instruction": instruction[:200],
