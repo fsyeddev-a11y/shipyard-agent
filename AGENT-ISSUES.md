@@ -219,6 +219,155 @@ Track recurring agent behavior problems here. Each entry is a candidate for a sy
 
 ---
 
+## Planning Phase Not Robust Enough
+
+**Issue:** The agent's planning step is shallow. It lists what it will do ("I'll create these files") but doesn't specify exact file paths, doesn't verify where files should live relative to existing structure, and doesn't outline the change strategy for each file. This is the root cause of the file placement issue — the plan says "create Layout.tsx" but never resolves the full path.
+
+**Examples:**
+- Build 2 Instruction 6: Agent planned "Create Layout.tsx, DocumentCard.tsx, CreateDocumentForm.tsx" but created them at `web/src/components/` instead of `packages/web/src/components/`
+- Build 2 Instruction 2: Planned "Create shared/types.ts" — created at root instead of packages/shared/
+
+**Occurrences:** Every multi-file instruction across both builds
+
+**Root cause:** The planning step doesn't include a "resolve paths" phase. The agent plans what to create but not where, relative to the actual project on disk.
+
+**Proposed fix:** System prompt rule: "During planning, for EVERY file you will create or edit, write out the FULL path from project root. Run list_files first and resolve each path against what exists. Example plan: 'Create packages/web/src/components/Layout.tsx (confirmed packages/web/src/ exists)'. Never plan with partial paths like 'web/src/...' — always resolve to the full path."
+
+---
+
+## No Rollback on Failure
+
+**Issue:** When the agent creates multiple files and a later one breaks the build, it doesn't undo earlier changes. Git auto-commits each file, but the agent never runs `git revert` when things go wrong. The project is left in a partially broken state.
+
+**Examples:**
+- Build 2 Instruction 7: Created App.tsx and main.tsx with conflicting BrowserRouter setups. Both were committed. Had to fix manually.
+
+**Occurrences:** Both builds — every time a multi-file instruction partially fails
+
+**Root cause:** No error recovery strategy. The agent only moves forward.
+
+**Proposed fix:** System prompt rule: "If you create multiple files and discover one breaks the build, fix the broken file before creating more. If a fix isn't possible, note what needs manual intervention." Long-term: implement rollback logic in the agent loop.
+
+---
+
+## No Build/Compile Verification Loop
+
+**Issue:** The agent creates TypeScript files but never runs `tsc --noEmit` to check types. It only discovers type errors when trying to run the server (which then times out). A quick compile check after each file would catch errors at the source.
+
+**Examples:**
+- Build 2 Instruction 4: Type errors in routes file only discovered when trying to start server
+- Both builds: import path errors not caught until runtime
+
+**Occurrences:** Both builds
+
+**Proposed fix:** System prompt rule: "After creating or editing a TypeScript file, run `npx tsc --noEmit` to check for type errors. Fix any errors before moving to the next file." Requires tsx/typescript to be installed.
+
+---
+
+## Agent Can't Parse Its Own Error Output
+
+**Issue:** When `run_command` returns an error, the agent often misinterprets the key line. It sees "command failed" but doesn't extract the actual error message to determine the fix. It may retry the same command or try unrelated fixes.
+
+**Examples:**
+- Build 2 Instruction 3: Agent saw "Error: Cannot find module" but tried `tsc` instead of fixing the module path
+- Build 2 Instruction 4: Agent saw TypeScript errors but added a comment instead of fixing the type issue
+
+**Occurrences:** Both builds — whenever run_command returns errors
+
+**Root cause:** The agent reads error output as natural language rather than parsing it structurally (file path, line number, error code).
+
+**Proposed fix:** Improve run_command output formatting to highlight the key error line. Or add a system prompt rule: "When a command fails, read the error output carefully. Identify: 1) which file has the error, 2) what line number, 3) what the error is. Then fix that specific issue."
+
+---
+
+## No Session Memory Within a Task
+
+**Issue:** In a long session, the agent re-reads files it just created, re-searches for things it just found, and sometimes contradicts its own earlier edits. Each message is processed without awareness of what happened 10 messages ago.
+
+**Examples:**
+- Build 2: Agent created database.ts then later tried to import from it with the wrong path — didn't remember what it had created
+- Both builds: Agent reads the same file multiple times across edits
+
+**Occurrences:** Both builds — becomes worse as instruction complexity increases
+
+**Root cause:** LangGraph state only holds messages. The agent has no structured memory of "files I created", "paths I verified", "errors I encountered". It relies on re-reading the conversation history.
+
+**Proposed fix:** Add a `working_context` to agent state that tracks: files created this session, files edited, errors encountered, resolved paths. The agent can reference this without re-reading. This is related to SPEC-02 (visible task tracker) and SPEC-05 (auto-memory).
+
+---
+
+## Package Manager / Workspace Hoisting Confusion
+
+**Issue:** Agent doesn't understand npm workspaces hoisting. Installs packages in the wrong directory, or expects packages to be in `packages/api/node_modules` when they're hoisted to the root `node_modules/`.
+
+**Examples:**
+- Build 2: Agent ran `npm install` in subdirectory when the root workspace would have handled it
+- Both builds: Confusion about where node_modules actually lives
+
+**Occurrences:** Both builds
+
+**Proposed fix:** System prompt rule: "In npm workspaces, packages are hoisted to the root node_modules. Run npm install from the project root, not from individual packages. To add a dependency to a specific package, use `npm install <pkg> -w packages/api`."
+
+---
+
+## No Awareness of Common Framework Patterns
+
+**Issue:** The agent doesn't know standard patterns that any developer would know: Express needs `express.json()` middleware, Vite needs `index.html`, React Router v6 uses `Routes` not `Switch`, React entry needs `createRoot`. These are constant across all projects using these frameworks.
+
+**Examples:**
+- Both builds: Missing index.html for Vite
+- Build 1: React Router v5 syntax
+- Build 2: Didn't set up express.json() middleware initially
+
+**Occurrences:** Both builds
+
+**Root cause:** The LLM's training data includes both old and new patterns. Without explicit guidance, it may pick outdated or incomplete patterns.
+
+**Proposed fix:** For Build 3, include a "tech stack cheat sheet" in the project context:
+- Vite: always needs index.html with script type=module pointing to src/main.tsx
+- React: createRoot(document.getElementById('root')!).render(<App />)
+- React Router v6: BrowserRouter, Routes, Route (NOT Switch, NOT v5)
+- Express: app.use(express.json()) for POST body parsing
+- TypeScript: run with `npx tsx`, compile check with `npx tsc --noEmit`
+
+---
+
+## Agent Can't Ask Clarifying Questions
+
+**Issue:** When an instruction is ambiguous, the agent guesses instead of asking. It has no mechanism to request clarification from the user mid-task.
+
+**Examples:**
+- Build 1 Instruction 4: Agent guessed MongoDB-style methods for sql.js — a question like "which database API should I use?" would have saved 3 interventions
+- Both builds: Agent guessed file paths instead of asking "should this go in packages/web or web?"
+
+**Occurrences:** Both builds
+
+**Root cause:** The agent loop is fire-and-forget. There's no "ask user" tool or pause mechanism.
+
+**Proposed fix (long-term):** Add an `ask_user` tool that pauses execution and sends a question via SSE. The user responds, and the agent continues. This is a significant architecture change but would prevent many wrong guesses.
+
+---
+
+## Recursion Limit Too Low for Complex Tasks
+
+**Issue:** 25 messages (~12 LLM turns) is not enough for instructions that involve creating 3+ files with verification. The agent runs out of budget, especially when verification steps (running the server, compile checks) consume messages.
+
+**Examples:**
+- Build 2 Instruction 3: Created database.ts correctly but burned remaining messages trying to verify
+- Build 2 Instruction 7: Created 2 of 3 pages before hitting limit
+- Build 1: Multiple instructions hit the limit
+
+**Occurrences:** Both builds — instructions 3 and 7 consistently
+
+**Root cause:** The recursion limit is a safety mechanism against infinite loops, but it's too low for legitimate complex tasks. Increasing it risks runaway behavior.
+
+**Proposed fix:** Instead of a flat limit, implement a smarter circuit breaker:
+- Track "productive" messages (those that create/edit files) vs "unproductive" (retries, failed reads)
+- Stop after N unproductive messages in a row, not after N total messages
+- Or: increase limit to 50 but add a "no progress for 10 messages" check
+
+---
+
 ## Template
 
 Copy this for new entries:
