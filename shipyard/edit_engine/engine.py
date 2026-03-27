@@ -156,10 +156,15 @@ def apply_edit_multi(
         if count == 0:
             lines = original_content.splitlines(keepends=True)
             context = "".join(lines[:100])
+            hint = ""
+            if " | " in old[:20]:
+                hint = " HINT: old_content appears to contain line number prefixes from read_file. Use raw text only."
+            elif not old.strip():
+                hint = " HINT: old_content is empty. Use create_file for new content, or provide actual text to replace."
             return EditResult(
                 success=False,
                 error="anchor_not_found",
-                error_detail=f"Edit {i + 1}: old_content not found in {file_path}",
+                error_detail=f"Edit {i + 1}: old_content not found in {file_path}.{hint} Read the file again and copy the exact text.",
                 file_context=context,
             )
 
@@ -167,7 +172,7 @@ def apply_edit_multi(
             return EditResult(
                 success=False,
                 error="ambiguous_anchor",
-                error_detail=f"Edit {i + 1}: old_content found {count} times in {file_path}. Include more surrounding context.",
+                error_detail=f"Edit {i + 1}: old_content found {count} times in {file_path}. Include more surrounding lines to make the match unique. Do NOT retry with the same old_content.",
             )
 
         # Normalize new_content against original file style
