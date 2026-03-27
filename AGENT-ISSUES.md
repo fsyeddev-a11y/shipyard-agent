@@ -16,7 +16,7 @@ Track recurring agent behavior problems here. Each entry is a candidate for a sy
 
 **Root cause:** Agent doesn't check existing project structure before creating files. It uses the path from the instruction literally instead of resolving it against what already exists on disk.
 
-**Proposed fix:** System prompt rule: "Before creating any file, run list_files to understand the project structure. Place files relative to existing directories. If a packages/ or src/ directory already exists, create files inside it — never create a duplicate at the root."
+**Proposed fix:** System prompt rule: "Before creating any file, run list_files to understand the project structure. Place files relative to existing directories. If a packages/ or src/ directory already exists, create files inside it — never create a duplicate at the root." **STATUS: Rule added in Build 2 system prompt but agent still ignores it (3 occurrences across 2 builds).** Needs stronger wording — agent sees `packages/` in list_files but doesn't connect "web/src" to "packages/web/src". Proposed escalation: "CRITICAL: If a packages/ directory exists, ALL package references (api, web, shared) MUST use packages/ prefix. NEVER create api/, web/, or shared/ at the project root."
 
 ---
 
@@ -124,6 +124,98 @@ Track recurring agent behavior problems here. Each entry is a candidate for a sy
 **Root cause:** The error message doesn't tell the agent what to do differently. The agent sees "verification_failed" but doesn't understand why.
 
 **Proposed fix:** Improve edit engine error messages to include actionable guidance. E.g., "old_content is empty — use create_file for new content or provide the existing text to replace." Also system prompt rule: "If an edit fails twice with the same error, change your approach — do not retry the same edit."
+
+---
+
+## Horizontal vs Vertical: Agent Builds Breadth-First Instead of Depth-First
+
+**Issue:** The agent works horizontally — creates all files/components in a single pass, then moves on. A real engineer works vertically — gets one thing working end-to-end, verifies it, then builds the next thing on top. The horizontal approach means errors compound silently and debugging becomes a cascade of 10+ fix prompts.
+
+**Examples:**
+- Build 1 Instruction 1: Agent created all config files (package.json, tsconfigs, vite.config) without verifying any of them compile. Missing dependencies weren't caught until much later.
+- Build 1 Instruction 7: Agent created all 3 page components at once, none of them worked. Had to send 4+ separate prompts to fix each one individually.
+- Build 1 API routes: Agent wrote all 5 CRUD routes in one pass. GET list worked but GET by id, PUT, and DELETE used wrong API (MongoDB methods on sql.js). If it had written and tested one route at a time, the mistake would have been caught immediately.
+
+**Occurrences:** Every multi-file instruction in Build 1
+
+**Root cause:** The system prompt doesn't tell the agent to verify its work incrementally. The agent optimizes for "completing the instruction" rather than "producing working code."
+
+**Proposed fix:** System prompt rules:
+1. "Work vertically, not horizontally. When building multiple things, get the first one working and verified before starting the second."
+2. "After creating a file that should be runnable or importable, verify it works: run the compiler, start the server, or import it. Fix issues before moving on."
+3. "After creating an API route, test it with run_command (curl). After creating a React component, check that the dev server shows no errors."
+4. "If an instruction asks for multiple files, prioritize: create one → verify → create next. Do not create all files then hope they work together."
+
+**Why this matters:** Vertical development catches errors at the source. A broken import caught immediately costs 1 edit to fix. The same broken import caught 5 files later costs 5+ edits because downstream code was built on the broken assumption.
+
+---
+
+## Server Verification Hits 60s Timeout
+
+**Issue:** When the agent follows the "verify after creating" rule and tries to start a long-running server (Express, Vite dev server), `run_command` blocks for 60 seconds and then times out. The agent then wastes remaining messages trying alternative approaches (node, tsc, npm start) that all fail the same way, eventually hitting the recursion limit.
+
+**Examples:**
+- Build 2 Instruction 3: Agent ran `npm start` to verify Express server — timed out. Tried `node src/index.js` (wrong, it's TypeScript). Tried `tsc` (not installed). Tried `npm install -g typescript` (permission denied). Hit recursion limit.
+- Build 1 had the same issue but the agent didn't try to verify, so it was hidden.
+
+**Occurrences:** Build 2 — Instructions 3, potentially 7-8
+
+**Root cause:** `run_command` uses `asyncio.create_subprocess_shell` with a 60s timeout. Servers don't exit — they listen forever. The tool has no background/detach mode.
+
+**Proposed fix (short-term):** System prompt rule: "To verify a server starts correctly, use run_command to start it with a timeout: e.g., `timeout 5 npx tsx src/index.ts` — if it doesn't crash in 5 seconds, it's likely working. Or use `npx tsx src/index.ts &` with a subsequent `curl` and `kill %1`."
+
+**Proposed fix (long-term):** Add background process support to `run_command` — a `background: true` parameter that starts the process, returns immediately with a PID, and provides a way to check output or kill it later. This is SPEC-04 in FUTURE-SPECS.md.
+
+---
+
+## Dependencies Not Fully Installed — Requires Manual npm install
+
+**Issue:** Despite the system prompt rule to install dependencies, the agent still leaves packages partially installed. It installs the main package but misses type declarations (@types/*), peer dependencies, or dev dependencies. The user has to manually run `npm install` to fix imports before the code will run.
+
+**Examples:**
+- Build 2 Instruction 1: Agent created files importing `express` but didn't install `@types/express` or `@types/node`
+- Build 2 Instruction 4: Agent created routes importing `uuid` but didn't install `uuid` or `@types/uuid`. Had to manually run `npm install uuid @types/uuid`
+- Build 1 Instructions 1, 3, 7: Same pattern — missing dependencies required manual intervention each time
+
+**Occurrences:** Every build, multiple instructions
+
+**Root cause:** The system prompt says "install packages when creating files that import them" but the agent interprets this narrowly — it installs the main package and forgets the @types/* counterpart. It also doesn't verify imports resolve after installing.
+
+**Proposed fix:**
+1. System prompt rule: "When installing npm packages for TypeScript, ALWAYS install the @types/* package too. Example: npm install express && npm install -D @types/express @types/node. After installing, verify with a quick compile check."
+2. Consider adding a post-install verification step: "After npm install, run npx tsc --noEmit to check for type errors."
+
+---
+
+## sql.js Returns Arrays, Agent Doesn't Map to Objects
+
+**Issue:** When using sql.js, `db.exec()` returns `[{columns: [...], values: [[...]]}]` — raw arrays, not objects. The agent writes routes that return these arrays directly to the API response instead of mapping them to typed objects with camelCase field names.
+
+**Examples:**
+- Build 1 Instruction 4: API returned `["1","workspace","Engineering",...]` instead of `{"id":"1","type":"workspace",...}`
+- Build 2 Instruction 4: Exact same issue — agent didn't map sql.js results to objects
+
+**Occurrences:** Both builds, same instruction
+
+**Root cause:** The agent doesn't know sql.js's response format. It assumes queries return objects like most ORMs. The snake_case → camelCase mapping (parent_id → parentId, created_at → createdAt) is also missed.
+
+**Proposed fix:** System prompt rule: "When using sql.js, db.exec() returns {columns, values} — raw arrays. Always map results to typed objects. Map snake_case column names to camelCase for the API response." Alternatively, include a helper function pattern in the prompt for sql.js projects.
+
+---
+
+## Agent Can't Compile/Run TypeScript Without Help
+
+**Issue:** The agent creates TypeScript files but doesn't know how to run them. It tries `node src/index.js` (wrong extension), `tsc` (not installed), and doesn't know about `tsx` or `ts-node`.
+
+**Examples:**
+- Build 2 Instruction 3: Agent tried `node src/index.js`, `tsc`, `npm install -g typescript` — none worked
+- Build 1: Same issue, required manual `npx tsx` intervention
+
+**Occurrences:** Build 1 Instruction 4, Build 2 Instruction 3
+
+**Root cause:** System prompt doesn't specify how to run TypeScript. The agent guesses.
+
+**Proposed fix:** System prompt rule: "To run TypeScript files, use `npx tsx <file>`. Install tsx as a dev dependency first: `npm install -D tsx`. Never use `node` directly on .ts files."
 
 ---
 

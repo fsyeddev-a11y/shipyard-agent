@@ -337,6 +337,195 @@ Track every test run and build. After each iteration, record what happened, what
 
 ---
 
+## Build 2: Helm v2 — Same PRD, Improved Agent
+
+**Date:** 2026-03-27
+**Project:** helm-v2 — same HELM-BUILD1.md PRD as Build 1
+**Model:** gpt-4o
+**Changes since Build 1:** System prompt overhaul (19 rules), move_file/delete_file tools, improved error messages
+
+### Instruction 1: Project Scaffolding
+
+| Metric | Value |
+|--------|-------|
+| Pass | ✓ |
+| Interventions | 0 |
+
+**Improvement over Build 1:** Agent installed dependencies, created main.tsx and index.css, used packages/ structure. Planning step visible in output. No manual npm install needed for this step.
+
+---
+
+### Instruction 2: Shared Types
+
+| Metric | Value |
+|--------|-------|
+| Pass | Partial |
+| Interventions | 1 |
+| Issue | Created `shared/types.ts` at root instead of `packages/shared/types.ts` |
+| Fix | Told agent to move file to packages/shared/ |
+
+**Same issue as Build 1.** The prompt says "shared/types.ts" and the agent creates it literally. The system prompt rule about checking project structure was followed (agent ran list_files and saw packages/) but still didn't connect "shared" → "packages/shared".
+
+---
+
+### Instruction 3: Database Setup
+
+| Metric | Value |
+|--------|-------|
+| Pass | Partial |
+| Interventions | 1 |
+| Issue | Agent tried to verify by running `npm start` — hit 60s timeout. Then tried `node`, `tsc`, `npm install -g typescript` — all failed. Hit recursion limit. |
+| Fix | Manually installed tsx, ran server with `npx tsx` |
+
+**New issue:** The "verify after creating" system prompt rule backfired — the agent correctly tried to test but doesn't know how to run TypeScript or handle long-running servers. Used up entire message budget on verification attempts.
+
+**Dependency issue:** Agent installed `sql.js` but not `tsx`, `@types/express`, or `@types/node`. Partial dependency installation persists.
+
+---
+
+### Instruction 4: API Routes
+
+| Metric | Value |
+|--------|-------|
+| Pass | Partial |
+| Interventions | 2 |
+| Issue 1 | Missing `uuid` and `@types/uuid` — had to manually install |
+| Issue 2 | `db` variable referenced outside its scope — createDocumentsRouter(db) was outside the .then() callback |
+| Issue 3 | sql.js results returned as arrays instead of objects (same as Build 1) |
+| Fix 1 | Manual `npm install uuid @types/uuid` |
+| Fix 2 | Told agent to move router init inside the .then() block |
+| Fix 3 | Told agent to map sql.js results to camelCase objects |
+
+**Recurring issues:** Dependency gaps and sql.js array→object mapping both repeated from Build 1.
+
+---
+
+### Instruction 5: API Client
+
+| Metric | Value |
+|--------|-------|
+| Pass | ✓ |
+| Interventions | 0 |
+
+---
+
+### Instruction 6: Layout and Components
+
+| Metric | Value |
+|--------|-------|
+| Pass | Partial |
+| Interventions | 1 |
+| Issue | Created `web/src/components/` at root instead of `packages/web/src/components/` |
+| Fix | Told agent to use move_file to relocate and rm -rf root web/ |
+
+**Same recurring file placement issue.** Agent ran list_files, saw packages/, but still created files at root.
+
+---
+
+### Instruction 7: Pages and Routing
+
+| Metric | Value |
+|--------|-------|
+| Pass | Partial |
+| Interventions | 4 |
+| Issue 1 | Hit recursion limit — created 2 of 3 pages before running out |
+| Issue 2 | `index.html` missing (same as Build 1) |
+| Issue 3 | Duplicate App declaration in main.tsx (import + inline const) |
+| Issue 4 | Double BrowserRouter (one in main.tsx, one in App.tsx) |
+| Fix 1 | Sent follow-up prompt for ProjectPage |
+| Fix 2 | Told agent to create index.html |
+| Fix 3 | Told agent to remove duplicate App definition |
+| Fix 4 | Told agent to remove BrowserRouter from main.tsx |
+
+**Missing index.html persists** despite system prompt rule about framework entry points. Pages placed in components/ instead of pages/ (noted but didn't fix — not blocking).
+
+---
+
+### Build 2 Summary
+
+| Metric | Build 1 | Build 2 | Change |
+|--------|---------|---------|--------|
+| Interventions | 16 | 9 | -44% |
+| Total prompts | ~22 | ~15 | -32% |
+| Backend working | ✓ (6 fixes) | ✓ (3 fixes) | -50% backend issues |
+| Frontend working | ✓ (10 fixes) | ✓ (6 fixes) | -40% frontend issues |
+| Agent planned before coding | No | Yes | New behavior |
+| Agent attempted verification | No | Yes | New behavior (but caused timeouts) |
+| Styling | ✗ | ✗ | Same |
+
+### Recurring Issues Still Present
+
+| Issue | Build 1 | Build 2 | Status |
+|-------|---------|---------|--------|
+| Files at wrong location (root vs packages/) | 3 occurrences | 3 occurrences | **Not fixed** — system prompt rule too weak |
+| Missing dependencies (@types/*, peer deps) | 3 occurrences | 2 occurrences | Slightly better but not fixed |
+| Missing index.html | 1 occurrence | 1 occurrence | **Not fixed** — system prompt rule not followed |
+| sql.js arrays not mapped to objects | 1 occurrence | 1 occurrence | **Not fixed** — agent doesn't know sql.js format |
+| Server timeout on verification | Hidden (didn't try) | 2 occurrences | **New** — caused by vertical dev rule |
+
+### New Issues Found in Build 2
+
+| Issue | Impact |
+|-------|--------|
+| Agent can't run TypeScript (doesn't know about tsx) | Blocks verification, wastes messages |
+| Server verification hits 60s timeout, burns message budget | Agent follows "verify" rule but can't handle long-running processes |
+| Duplicate code in main.tsx (import + inline definition) | Agent edits append instead of replace |
+
+### Key Insight: File Placement Root Cause
+
+The file placement issue persists because the agent interprets instruction paths literally. When the prompt says "web/src/components/", the agent creates exactly that path — it doesn't resolve "web" to "packages/web" even though it can see packages/ in the file listing.
+
+**Proposed fix for Build 3:** Before sending any build instructions, send an initial "project context" prompt that tells the agent the project hierarchy:
+
+```
+"This is a monorepo. The project structure is:
+- packages/api/ — Express backend
+- packages/web/ — React frontend
+- packages/shared/ — shared TypeScript types
+When instructions reference api, web, or shared, always use the packages/ prefix."
+```
+
+This front-loads the context instead of relying on the agent to infer it from list_files.
+
+---
+
+## Comparison: Build 1 → Build 2
+
+```
+Interventions:        16 → 9  (-44%)
+Prompts sent:         22 → 15 (-32%)
+Issues resolved:      3 (empty anchor, line numbers in anchors, post-completion rambling)
+Issues persisting:    4 (file placement, deps, index.html, sql.js mapping)
+New issues:           2 (server timeout, can't run TypeScript)
+```
+
+The system prompt overhaul worked for **behavioral** issues (planning, vertical development) but failed for **knowledge** issues (where files go in monorepos, what sql.js returns, how to run TypeScript). Knowledge issues may need either:
+1. Project-specific context injection (tell the agent about the project before starting)
+2. Domain-specific system prompt rules (TypeScript/React/monorepo patterns)
+3. Learning from errors within a session (auto-memory, SPEC-05)
+
+---
+
+## Planned Improvements (Pre-Build 3)
+
+### Project Context Injection
+- Before Build 3, send a "project context" prompt establishing the monorepo structure
+- Tell the agent explicitly: api = packages/api, web = packages/web, shared = packages/shared
+- This addresses the #1 recurring issue (file placement)
+
+### TypeScript Execution Knowledge
+- System prompt rule: "To run TypeScript, use npx tsx. Install tsx as dev dep first."
+- System prompt rule: "When installing npm packages for TypeScript, always install @types/* too."
+
+### Server Verification Strategy
+- System prompt rule: "To test a server, start it in background: `npx tsx src/index.ts &`, then curl, then kill %1. Or use `timeout 5 npx tsx src/index.ts` to check it doesn't crash."
+- Long-term: implement background process support (SPEC-04)
+
+### sql.js Knowledge
+- System prompt rule or project context: "sql.js db.exec() returns {columns, values} arrays. Always map to objects."
+
+---
+
 ## Comparison Template (for final submission)
 
 After each build iteration, fill in:
