@@ -6,35 +6,26 @@
 
 This is Build 1: the simplest vertical slice — scaffold a full-stack app, wire up a database, and connect frontend to backend.
 
-## Tech Stack
+## Tech Stack & Versions
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Express + TypeScript + Node.js |
-| Database | SQLite via **sql.js** (pure JS, no native compilation) |
-| Frontend | React 18 + Vite 4 + TypeScript + TailwindCSS |
-| Shared | TypeScript types shared between api and web |
-| Runtime | Use `npx tsx` to run TypeScript files. Install `tsx` as a dev dependency. |
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Backend | Express + TypeScript | express@4, typescript@5 |
+| Database | SQLite via sql.js | sql.js@1 |
+| Frontend | React + Vite + TailwindCSS | react@18, react-dom@18, vite@4.5, tailwindcss@3 |
+| Routing | React Router | react-router-dom@6 |
+| Shared | TypeScript types | shared between api and web |
+| Runtime | tsx (run TypeScript directly) | tsx@4 |
+| IDs | UUID generation | uuid@9 |
 
-## Dependency Versions (pin these exactly)
+**Node version:** 20.16. Do NOT install packages that require Node 20.19+.
 
-Install these specific versions. Do NOT use `@latest` — the system runs Node 20.16.
-
-```
-# Backend
-express@4           @types/express@4      @types/node@20
-sql.js@1            uuid@9                @types/uuid@9
-tsx@4               typescript@5
-
-# Frontend
-react@18            react-dom@18          react-router-dom@6
-@types/react@18     @types/react-dom@18
-vite@4.5            @vitejs/plugin-react@4.2
-tailwindcss@3
-
-# All installs from project root using workspace flag:
-# npm install <pkg> -w packages/api
-# npm install <pkg> -w packages/web
+**Install from project root using workspace flags:**
+```bash
+npm install express uuid sql.js -w packages/api
+npm install -D tsx typescript @types/express @types/node @types/uuid -w packages/api
+npm install react@18 react-dom@18 react-router-dom@6 -w packages/web
+npm install -D @types/react@18 @types/react-dom@18 vite@4.5 @vitejs/plugin-react@4.2 tailwindcss@3 -w packages/web
 ```
 
 ## Data Model
@@ -63,31 +54,164 @@ interface Document {
 //             └── issue (parentId: project.id)
 ```
 
-SQL table uses snake_case columns: `parent_id`, `created_at`, `updated_at`. The API must map these to camelCase (parentId, createdAt, updatedAt) in all responses.
+**SQL table** — uses snake_case columns. The API MUST map to camelCase in all responses.
 
-**sql.js note:** `db.exec()` returns `{columns: [...], values: [[...]]}` — raw arrays, NOT objects. Always map query results to typed Document objects with camelCase field names.
+```sql
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT DEFAULT '',
+  parent_id TEXT,
+  status TEXT DEFAULT 'active',
+  priority TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+```
+
+**Seed data** — insert ALL of these on first startup (check if table is empty first):
+
+| id | type | title | parent_id | status |
+|----|------|-------|-----------|--------|
+| 1 | workspace | Engineering | null | active |
+| 2 | program | Platform | 1 | active |
+| 3 | program | Product | 1 | active |
+| 4 | project | Project A | 2 | active |
+| 5 | project | Project B | 3 | active |
+| 6 | issue | Issue 1 | 4 | open |
+| 7 | issue | Issue 2 | 4 | closed |
+| 8 | issue | Issue 3 | 5 | open |
+| 9 | issue | Issue 4 | 5 | closed |
+
+## Implementation Patterns (use these exactly)
+
+### Backend: Express server (packages/api/src/index.ts)
+
+```typescript
+import express from 'express';
+import { initDb, db } from './db';
+import documentRoutes from './routes/documents';
+
+const app = express();
+const PORT = 3001;  // MUST be 3001
+
+app.use(express.json());  // MUST use express.json(), NOT body-parser
+app.use('/api/documents', documentRoutes);
+
+// Error handling middleware — MUST be last
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Initialize DB and seed, THEN start server
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`API server running on http://localhost:${PORT}`);
+  });
+});
+```
+
+### Backend: sql.js database (packages/api/src/db.ts)
+
+```typescript
+import initSqlJs, { Database } from 'sql.js';
+
+let db: Database;
+
+async function initDb() {
+  const SQL = await initSqlJs();
+  db = new SQL.Database();
+  // Create table...
+  // Seed data if empty...
+}
+
+// db.exec() returns [{ columns: [...], values: [[...], ...] }]
+// ALWAYS null-check: result[0]?.values || []
+// ALWAYS map to camelCase objects:
+function mapRow(row: any[]) {
+  return {
+    id: row[0], type: row[1], title: row[2], content: row[3],
+    parentId: row[4], status: row[5], priority: row[6],
+    createdAt: row[7], updatedAt: row[8],
+  };
+}
+
+export { initDb, db, mapRow };
+```
+
+### Frontend: React entry (packages/web/src/main.tsx)
+
+```tsx
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(<App />);
+```
+
+Do NOT use `ReactDOM.render` — that's React 17. Do NOT import from `react-dom` — use `react-dom/client`.
+
+### Frontend: React Router (packages/web/src/App.tsx)
+
+```tsx
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+// Use Routes + Route with element prop. Do NOT use Switch (that's v5).
+// BrowserRouter goes here ONLY — not in main.tsx too.
+```
+
+### Frontend: API client (packages/web/src/apiClient.ts)
+
+```typescript
+const BASE_URL = '/api';  // Relative URL — goes through Vite proxy. Do NOT use http://localhost:3001
+// Use fetch(), NOT axios
+```
+
+### Frontend: Vite config (packages/web/vite.config.ts)
+
+```typescript
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
+});
+```
+
+### Frontend: Required files
+
+These files MUST exist for Vite to work:
+
+1. **packages/web/index.html** — with `<div id="root"></div>` and `<script type="module" src="/src/main.tsx"></script>`
+2. **packages/web/src/main.tsx** — React entry with createRoot
+3. **packages/web/src/index.css** — with `@tailwind base; @tailwind components; @tailwind utilities;`
+4. **packages/web/tailwind.config.js** — with content: `['./src/**/*.{ts,tsx}']`
 
 ## Build 1 Scope
 
 ### What's IN
 
 **Backend:**
-- Express server with `express.json()` middleware and error handling
-- SQLite database (sql.js) with a single `documents` table
-- Table created on startup if it doesn't exist
-- CRUD routes:
-  - `POST /api/documents` — create (generate UUID, set timestamps)
-  - `GET /api/documents?type=X&parentId=Y` — list with optional filters
-  - `GET /api/documents/:id` — get one (404 if not found)
-  - `PUT /api/documents/:id` — update provided fields only (404 if not found)
-  - `DELETE /api/documents/:id` — delete (404 if not found)
-- Seed data: 1 workspace "Engineering", 2 programs, 2 projects, 4 issues with different statuses
-- Seed function must check if data exists before inserting (no duplicates on restart)
+- Express server on port 3001 with `express.json()` middleware
+- sql.js database with documents table (schema above)
+- All 9 seed records inserted on startup
+- CRUD routes: POST, GET (with type/parentId filters), GET by id, PUT, DELETE
+- Error handling middleware
 
 **Frontend:**
-- React app with Vite + TailwindCSS
+- React 18 app with Vite 4 + TailwindCSS 3
 - React Router v6 for navigation
-- API client (thin fetch wrapper, string concatenation for URLs — not URL constructor)
+- API client using fetch with relative `/api` URLs
 - Three pages:
   - **Workspace page** (`/`): workspace title, grid of program cards, create program form
   - **Program page** (`/programs/:id`): program title, breadcrumb, grid of project cards, create project form
@@ -183,56 +307,36 @@ You are building the Helm app. Read this entire PRD, then plan and implement it.
 **How to work:**
 1. Read this PRD fully before writing any code.
 2. Plan the work — break it into specs, decide on directory structure and file paths. Write your plan to `.shipyard/notes/plan.md`.
-3. Implement one spec at a time. After each spec, verify it works. Write progress to `.shipyard/notes/progress.md`.
+3. Implement one spec at a time. After each spec, verify it works. Append progress to `.shipyard/notes/progress.md`.
 4. If you get stuck on something, write what's blocking you to `.shipyard/notes/issues.md` and move on to the next spec.
 5. At the end, verify the full app works end-to-end.
 
 **High-level build order (you decide the exact specs and file paths):**
 
-1. **Monorepo scaffolding** — set up the project structure with separate backend, frontend, and shared type packages. Configure TypeScript, workspaces, and the Vite dev server proxy. Install all dependencies.
+1. **Monorepo scaffolding** — set up the project structure with packages/api, packages/web, packages/shared. Configure TypeScript, workspaces, and the Vite dev server proxy. Install ALL dependencies using the exact versions and commands listed above.
 
 2. **Shared types** — define the Document data model and input types.
 
-3. **Database** — set up sql.js, create the documents table, write the seed function with idempotency check.
+3. **Database** — set up sql.js using the pattern above. Create the documents table with the exact schema above. Seed ALL 9 records from the seed data table. The `initDb` function must be async and called before the server starts.
 
-4. **API routes** — implement CRUD endpoints. Wire them into the Express server entry point. Verify each route works with curl.
+4. **API routes** — implement CRUD endpoints. Use the `mapRow` helper to convert sql.js arrays to camelCase objects. Wire routes into Express at `/api/documents`. Server MUST listen on port 3001.
 
-5. **API client** — create the frontend fetch wrapper that calls the API routes.
+5. **API client** — create fetch wrapper using relative `/api` URLs (NOT http://localhost:3001). Do NOT use axios.
 
 6. **Reusable components** — Layout (sidebar + main), DocumentCard (clickable card with type/status badges), CreateDocumentForm (title + content + submit).
 
-7. **Pages and routing** — WorkspacePage, ProgramPage, ProjectPage with React Router v6. Each page fetches data, renders components, and supports creating new documents.
+7. **Pages and routing** — WorkspacePage, ProgramPage, ProjectPage with React Router v6 using Routes/Route/element pattern. Each page fetches data, renders components, and supports creating new documents.
 
-8. **Verification** — start both servers, test the full flow: workspace → programs → projects → issues → create new issue.
+8. **Verification** — test the full flow: workspace → programs → projects → issues → create new issue.
 
 **Verification criteria (the app is done when):**
 - [ ] API server starts without errors on port 3001
-- [ ] `GET /api/documents?type=workspace` returns the Engineering workspace as a JSON object (not array of arrays)
-- [ ] `GET /api/documents?type=program&parentId=<workspace-id>` returns Platform and Product
+- [ ] `GET /api/documents?type=workspace` returns the Engineering workspace as a JSON object
+- [ ] `GET /api/documents?type=program&parentId=1` returns Platform and Product
 - [ ] `POST /api/documents` creates a new document and returns it with id and timestamps
 - [ ] Web dev server starts on port 5173
 - [ ] Browser shows workspace page with "Engineering" title and two program cards
 - [ ] Clicking a program navigates to program page with breadcrumb and project cards
 - [ ] Clicking a project navigates to project page with breadcrumb and issue list
-- [ ] Creating a new issue from the project page adds it to the list without page refresh
+- [ ] Creating a new issue from the project page adds it to the list
 - [ ] Sidebar with "Helm" branding and Workspace link is visible on all pages
-
-## After Build 1
-
-Record:
-- Pass/fail per spec
-- Number of interventions
-- What went wrong
-- Total tool calls and tokens
-
-### Build 2 Preview
-- Issue detail page with markdown rendering
-- Sprint documents (type: 'sprint')
-- Status workflow (backlog → in_progress → review → done)
-- Assignee field
-
-### Build 3 Preview
-- Wiki/documents section
-- Kanban board view
-- Authentication
-- Search
