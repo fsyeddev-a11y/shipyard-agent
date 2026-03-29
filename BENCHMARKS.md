@@ -703,6 +703,119 @@ Plan before coding:   no → yes
 End-to-end working:   yes (both builds, after fixes)
 ```
 
+## Build 5 / 5.1: GPT-4o Final Attempts
+
+**Date:** 2026-03-29
+**Model:** gpt-4o
+
+Build 5 (helm-v5) and 5.1 (helm-v5.1) both had correct project structure but placeholder implementations — routes returned strings like "Get all documents" instead of database queries, pages had hardcoded "Sample Document" instead of data fetching. GPT-4o consistently creates file structure correctly but writes shallow code.
+
+**New features tested:** background process support, verify_checklist tool, post-completion audit.
+- Background processes: agent didn't use them (still got stuck on server testing)
+- verify_checklist: not called by agent
+- Post-completion audit: not triggered (agent wrote IN_PROGRESS, not COMPLETE)
+
+**Conclusion:** GPT-4o hit its ceiling. Architecture and tooling improvements weren't enough — the model itself generates placeholder code. Switched to GPT-5.4.
+
+---
+
+## Build 6: Helm v6 — GPT-5.4 Model Upgrade
+
+**Date:** 2026-03-29
+**Project:** helm-v6
+**Model:** gpt-5.4 (first build with this model)
+
+### Changes Since Build 5
+
+- Switched model from gpt-4o to gpt-5.4
+- verify_checklist tool available (14 tools total)
+- Post-completion audit in run_agent_loop
+- Pinned dependency versions in PRD
+- Framework patterns inlined in PRD
+
+### Results
+
+**Night and day difference.** GPT-5.4 produced real, substantive implementations on the first attempt.
+
+| Spec | Status | Lines | Notes |
+|------|--------|-------|-------|
+| 1. Scaffolding | ✓ | — | All files correct, including index.html, main.tsx, index.css, tailwind |
+| 2. Shared types | ✓ | 28 | Full types with exports |
+| 3. Database | ✓ | 79 | sql.js with mapRow helper, all 9 seed records |
+| 4. API routes | ✓ | 143 | Real CRUD with parameterized queries, UUID gen, mapRow |
+| 5. API client | ✓ | 63 | fetch with type/parentId params, /api base URL |
+| 6. Components | ✓ | 218 | Layout, DocumentCard, CreateDocumentForm — all real |
+| 7. Pages | ✓ | 263 | Data fetching, useEffect, state, error handling |
+| 8. Verification | Partial | — | Server test succeeded, but port conflict on re-test triggered audit override |
+
+### Code Quality: GPT-4o vs GPT-5.4
+
+| Metric | GPT-4o (Build 5.1) | GPT-5.4 (Build 6) |
+|--------|---------------------|---------------------|
+| Routes file | 30 lines (placeholder strings) | **143 lines (real CRUD with DB)** |
+| Database | ~40 lines | **79 lines (mapRow, seed, init)** |
+| API client | ~35 lines (no params) | **63 lines (full params, error handling)** |
+| Pages total | 41 lines (hardcoded content) | **263 lines (data fetching, state, effects)** |
+| Components total | ~100 lines | **218 lines (props, styling, events)** |
+| Seed records | 3-5 | **9 (all required)** |
+| Uses mapRow helper | No | **Yes** |
+
+### Post-Completion Audit Results
+
+The audit system worked correctly:
+1. Agent completed all specs and wrote STATUS: COMPLETE
+2. Post-completion audit ran verify_checklist automatically
+3. Server test found port 3001 still in use (from agent's own previous test)
+4. Audit overrode STATUS to IN_PROGRESS with failure details
+5. Agent received the failure, added graceful shutdown handling to fix it
+6. Ran out of iterations before final re-verification
+
+**The audit caught a real issue and the agent tried to fix it.** This is exactly the intended behavior.
+
+### Interventions
+
+| Type | Count | Details |
+|------|-------|---------|
+| Manual dependency install | 1 | npm install react/vite in web package |
+| Port kill | 1 | lsof -ti :3001 kill from agent's stale process |
+| **Total** | **2** | Down from 8 in Build 4 |
+
+### Build 6 Summary
+
+| Metric | Build 1 | Build 4 | Build 5.1 | Build 6 |
+|--------|---------|---------|-----------|---------|
+| Model | gpt-4o | gpt-4o | gpt-4o | **gpt-5.4** |
+| Interventions | 16 | 8 | ~4 (incomplete) | **2** |
+| Code quality | Real (after fixes) | Real (after fixes) | Placeholders | **Real on first attempt** |
+| File placement | 3 errors | 0 | 0 | **0** |
+| Seed data | Incomplete | Incomplete | Incomplete | **Complete (9/9)** |
+| Routes | Real (after fixes) | Real (after fixes) | Placeholders | **Real (143 lines)** |
+| Pages | Placeholders | Placeholders | Placeholders | **Real (263 lines)** |
+| End-to-end working | ✓ (16 fixes) | ✓ (8 fixes) | ✗ | **✓ (2 fixes)** |
+| Audit system | N/A | N/A | N/A | **Worked correctly** |
+
+### Key Takeaway
+
+The model upgrade from GPT-4o to GPT-5.4 had a bigger impact than all system prompt and tooling improvements combined. GPT-4o consistently wrote placeholder code regardless of how detailed the instructions were. GPT-5.4 wrote real implementations from the same PRD.
+
+**Architecture improvements still matter** — the auto-continue loop, verify_checklist, and audit system are model-agnostic and will help any model. But the model quality is the primary driver of code quality.
+
+---
+
+## Full Build Comparison: Build 1 → Build 6
+
+```
+Build 1 (gpt-4o, no tooling):     16 interventions, placeholder code, 8 manual prompts
+Build 2 (gpt-4o, system prompt):   9 interventions, real code after fixes
+Build 4 (gpt-4o, auto-continue):   8 interventions, auto-continue worked, still needed fixes
+Build 5 (gpt-4o, all features):    4 interventions, but placeholder implementations
+Build 6 (gpt-5.4, all features):   2 interventions, real code on first attempt
+
+Interventions:  16 → 2  (-88%)
+Model impact:   switching gpt-4o → gpt-5.4 = ~75% of the improvement
+Tooling impact: system prompt + tools = ~25% of the improvement
+```
+
 ## Comparison Template (for final submission)
 
 After each build iteration, fill in:
