@@ -12,9 +12,30 @@ This is Build 1: the simplest vertical slice — scaffold a full-stack app, wire
 |-------|-----------|
 | Backend | Express + TypeScript + Node.js |
 | Database | SQLite via **sql.js** (pure JS, no native compilation) |
-| Frontend | React + Vite + TypeScript + TailwindCSS |
+| Frontend | React 18 + Vite 4 + TypeScript + TailwindCSS |
 | Shared | TypeScript types shared between api and web |
 | Runtime | Use `npx tsx` to run TypeScript files. Install `tsx` as a dev dependency. |
+
+## Dependency Versions (pin these exactly)
+
+Install these specific versions. Do NOT use `@latest` — the system runs Node 20.16.
+
+```
+# Backend
+express@4           @types/express@4      @types/node@20
+sql.js@1            uuid@9                @types/uuid@9
+tsx@4               typescript@5
+
+# Frontend
+react@18            react-dom@18          react-router-dom@6
+@types/react@18     @types/react-dom@18
+vite@4.5            @vitejs/plugin-react@4.2
+tailwindcss@3
+
+# All installs from project root using workspace flag:
+# npm install <pkg> -w packages/api
+# npm install <pkg> -w packages/web
+```
 
 ## Data Model
 
