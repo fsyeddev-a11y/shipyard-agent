@@ -596,6 +596,113 @@ This triggered the smart circuit breaker implementation.
 
 ---
 
+## Build 4: Helm v4 — Auto-Continue Loop + Full Autonomous Build
+
+**Date:** 2026-03-28
+**Project:** helm-v4 — same HELM-BUILD1.md PRD
+**Model:** gpt-4o
+
+### Changes Since Build 3
+
+**Auto-continue loop (run_agent_loop):**
+- REPL-style outer loop that re-invokes run_agent() when STATUS: COMPLETE not found in progress.md
+- Max 10 iterations, deterministic continue message (no extra LLM calls)
+- Intermediate "done" events suppressed — CLI sees one final "Done"
+
+**Status Protocol:**
+- Agent must write STATUS: COMPLETE or STATUS: IN_PROGRESS to progress.md
+- If omitted, system assumes IN_PROGRESS and re-runs (safe default)
+
+**append_note tool:**
+- Timestamped append to notes instead of overwrite
+- Progress log preserves full history across iterations
+
+**CLI status tracker:**
+- Running counts after each tool result (iteration, tools, edits, created)
+- Cyan auto-continue banner between iterations
+- Green summary on completion
+
+**System prompt fixes:**
+- "Planning is NOT the end of the task" rule
+- Progress uses append_note, not write_note
+
+### Results
+
+**Agent completed all 8 specs autonomously** — first time. Auto-continue loop worked, looping through iterations until verification phase.
+
+| Spec | Status | Notes |
+|------|--------|-------|
+| 1. Monorepo scaffolding | ✓ | All files in packages/, correct structure |
+| 2. Shared types | ✓ | |
+| 3. Database (sql.js) | ✓ | Table created, but seed data incomplete |
+| 4. API routes | ✓ | CRUD working, but sql.js null check missing |
+| 5. API client | ✓ | Used full URL instead of /api (CORS issue) |
+| 6. Components | ✓ | Layout, DocumentCard, CreateDocumentForm |
+| 7. Pages + routing | ✓ | All 3 pages with data fetching |
+| 8. Verification | Partial | Burned ~5 iterations on server timeout |
+
+### Interventions
+
+**Code interventions (agent should have handled these):**
+1. API client used `http://localhost:3001/api` instead of `/api` → CORS error
+2. sql.js `db.exec()` returns empty array but code assumed `.values` exists → 500 error
+3. Seed function only inserted workspace, left `// Add more` comment for programs/projects/issues
+4. React 17 installed instead of React 18 (`react-dom/client` doesn't exist in 17)
+
+**Environment interventions (not the agent's fault):**
+5. Port 3001 in use from agent's earlier timeout attempts → manual kill
+6. Vite latest requires Node 20.19+ but system has 20.16 → pinned Vite 4.x
+7. npm workspace hoisting prevented local package resolution → multiple reinstalls
+8. Stale Vite zombie processes on ports 5173-5183 → manual kill
+
+**Total interventions:** ~8 (4 code + 4 environment)
+
+### Build 4 Summary
+
+| Metric | Build 1 | Build 2 | Build 3 | Build 4 |
+|--------|---------|---------|---------|---------|
+| Interventions | 16 | 9 | N/A (incomplete) | 8 |
+| Agent completed all specs | No | No | 6/8 | **8/8** |
+| Auto-continue | N/A | N/A | N/A | **Yes** |
+| File placement issues | 3 | 3 | 0 | **0** |
+| End-to-end working | ✓ (16 fixes) | ✓ (9 fixes) | Not tested | **✓ (8 fixes)** |
+| Plan written before coding | No | No | Yes | **Yes** |
+| Progress tracked in notes | No | No | Yes (overwritten) | **Yes (append)** |
+
+### Recurring Issues Across All Builds
+
+| Issue | Build 1 | Build 2 | Build 4 | Root Cause |
+|-------|---------|---------|---------|------------|
+| sql.js array/null issues | ✓ | ✓ | ✓ | Agent doesn't know sql.js API despite system prompt |
+| Server timeout burns iterations | Hidden | ✓ | ✓ | No background process support |
+| Incomplete seed data | ✓ (double insert) | ✓ (double insert) | ✓ (missing data) | Agent leaves placeholders |
+| Wrong dependency versions | N/A | N/A | ✓ (React 17, Vite 2) | LLM training data has old versions |
+| CORS / wrong API base URL | N/A | N/A | ✓ | Agent ignores proxy setup |
+
+### Key Insight
+
+The remaining issues fall into two categories:
+
+1. **Knowledge issues** (React 17 vs 18, Vite versions, sql.js API) — the LLM's training data is outdated. Fix: either pin versions in the PRD, or give the agent a tool to look up current stable versions.
+
+2. **Environment issues** (Node version, port conflicts, workspace hoisting) — these are system-level problems the agent can't control. Fix: document system requirements, or containerize.
+
+The core agent architecture (plan → implement → verify → auto-continue) is working. The next improvements should focus on giving the agent better tools and knowledge, not more system prompt rules.
+
+---
+
+## Comparison: Build 1 → Build 4
+
+```
+Interventions:        16 → 8  (-50%)
+File placement:       3 errors → 0 errors (fixed)
+Auto-continue:        manual → automated (new capability)
+Specs completed:      manual per-spec → all 8 autonomous
+Progress tracking:    none → timestamped append log
+Plan before coding:   no → yes
+End-to-end working:   yes (both builds, after fixes)
+```
+
 ## Comparison Template (for final submission)
 
 After each build iteration, fill in:
