@@ -313,7 +313,7 @@ You are building the Helm app. Read this entire PRD, then plan and implement it.
 
 **High-level build order (you decide the exact specs and file paths):**
 
-1. **Monorepo scaffolding** — set up the project structure with packages/api, packages/web, packages/shared. Configure TypeScript, workspaces, and the Vite dev server proxy. Install ALL dependencies using the exact versions and commands listed above.
+1. **Monorepo scaffolding** — set up the project structure with packages/api, packages/web, packages/shared. Configure TypeScript, workspaces, and the Vite dev server proxy. Install ALL dependencies using the exact versions and commands listed above. CRITICAL: This step MUST also create ALL Vite entry point files: packages/web/index.html, packages/web/src/main.tsx, packages/web/src/index.css (with Tailwind directives), packages/web/tailwind.config.js, and packages/web/vite.config.ts. Use the exact patterns from the "Implementation Patterns" section above. These files are required for the web app to start — do not defer them to a later spec.
 
 2. **Shared types** — define the Document data model and input types.
 

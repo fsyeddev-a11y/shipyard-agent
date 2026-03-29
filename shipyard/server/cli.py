@@ -205,15 +205,28 @@ def _handle_event(event_type: str | None, data: dict):
     elif event_type == "continue":
         iteration = data.get("iteration", "?")
         max_iter = data.get("max", "?")
+        audit_failures = data.get("audit_failures")
         _tracker.iteration = iteration
         _tracker.max_iterations = max_iter
-        click.echo(click.style(
-            f"\n{'='*60}\n"
-            f"  AUTO-CONTINUE: iteration {iteration}/{max_iter}\n"
-            f"  Tools so far: {_tracker.tool_calls}  |  Edits: {_tracker.edits}  |  Created: {_tracker.files_created}\n"
-            f"{'='*60}\n",
-            fg="cyan",
-        ))
+
+        if audit_failures:
+            click.echo(click.style(
+                f"\n{'='*60}\n"
+                f"  AUDIT FAILED — overriding STATUS: COMPLETE\n"
+                f"  Failures:\n" +
+                "\n".join(f"    {f}" for f in audit_failures) +
+                f"\n  Continuing... iteration {iteration}/{max_iter}\n"
+                f"{'='*60}\n",
+                fg="yellow",
+            ))
+        else:
+            click.echo(click.style(
+                f"\n{'='*60}\n"
+                f"  AUTO-CONTINUE: iteration {iteration}/{max_iter}\n"
+                f"  Tools so far: {_tracker.tool_calls}  |  Edits: {_tracker.edits}  |  Created: {_tracker.files_created}\n"
+                f"{'='*60}\n",
+                fg="cyan",
+            ))
     elif event_type == "error":
         click.echo(f"\n\u2717 Error: {data.get('message', data)}", err=True)
     elif event_type == "done":

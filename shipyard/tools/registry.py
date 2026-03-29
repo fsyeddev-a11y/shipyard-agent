@@ -12,6 +12,7 @@ from shipyard.tools.run_command import run_command, stop_background, RunCommandI
 from shipyard.tools.move_file import move_file, MoveFileInput
 from shipyard.tools.delete_file import delete_file, DeleteFileInput
 from shipyard.tools.notes import write_note, append_note, read_notes, WriteNoteInput, AppendNoteInput, ReadNotesInput
+from shipyard.tools.verify import verify_checklist, VerifyChecklistInput
 
 
 class ToolRegistry:
@@ -118,6 +119,12 @@ class ToolRegistry:
                 "Read notes from .shipyard/notes/. Pass a topic to read one note, or omit to list all notes with summaries.",
                 read_notes,
                 ReadNotesInput,
+            ),
+            self._make_tool(
+                "verify_checklist",
+                "Run automated verification: checks all files from plan.md exist, tries starting servers, curls API endpoints. Call this BEFORE writing STATUS: COMPLETE.",
+                verify_checklist,
+                VerifyChecklistInput,
             ),
         ]
         return tools

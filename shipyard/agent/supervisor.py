@@ -96,10 +96,11 @@ SYSTEM_PROMPT = """You are Shipyard, an autonomous coding agent. You make surgic
     - `STATUS: IN_PROGRESS` — more work remains from the plan
     - `STATUS: COMPLETE` — ALL specs/tasks are fully implemented and verified
     This line is read by the auto-continue system. If you omit it, the system assumes IN_PROGRESS and will re-run you.
+30. BEFORE writing STATUS: COMPLETE, you MUST call verify_checklist. This tool checks that all files from your plan exist, servers start without crashing, and API endpoints respond. If any check fails, fix the issues first. Do NOT write STATUS: COMPLETE if verify_checklist reports failures.
 
 ## Finishing
-30. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
-31. When all implementation is truly complete (or budget is exhausted), update .shipyard/notes/progress.md one final time with STATUS: COMPLETE or STATUS: IN_PROGRESS, then briefly confirm what you did and stop.
+31. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
+32. When all implementation is truly complete: call verify_checklist → fix any failures → then write STATUS: COMPLETE to progress.md and stop.
 
 Project root: {project_root}
 """
@@ -334,6 +335,36 @@ def _build_continue_message(
     )
 
 
+async def _post_completion_audit(config: ShipyardConfig) -> list[str]:
+    """
+    Run automated checks after agent claims STATUS: COMPLETE.
+    Returns list of failure messages. Empty = all passed.
+    """
+    from shipyard.tools.verify import verify_checklist
+    result_str = await verify_checklist(project_root=config.project_root)
+
+    failures = []
+    for line in result_str.split("\n"):
+        if line.strip().startswith("✗"):
+            failures.append(line.strip())
+
+    return failures
+
+
+def _override_progress_status(config: ShipyardConfig, failures: list[str]):
+    """Override progress.md STATUS to IN_PROGRESS with audit failure details."""
+    progress_path = config.shipyard_path / "notes" / "progress.md"
+    if progress_path.exists():
+        content = progress_path.read_text(encoding="utf-8")
+        content = content.replace("STATUS: COMPLETE", "STATUS: IN_PROGRESS (overridden by audit)")
+        content += "\n\n---\n**[AUDIT OVERRIDE]**\nThe following checks failed:\n"
+        for f in failures:
+            content += f"- {f}\n"
+        content += "\nFix these issues and run verify_checklist again before marking complete.\n"
+        content += "\nSTATUS: IN_PROGRESS\n"
+        progress_path.write_text(content, encoding="utf-8")
+
+
 async def run_agent_loop(instruction: str, config: ShipyardConfig):
     """
     Auto-continue wrapper around run_agent().
@@ -375,10 +406,24 @@ async def run_agent_loop(instruction: str, config: ShipyardConfig):
         # Check progress.md for STATUS: COMPLETE
         progress_content = _read_progress_file(config)
         if _is_complete(progress_content):
-            # All done — yield the final done event
-            if last_done_event:
-                yield last_done_event
-            return
+            # Agent claims done — run post-completion audit
+            audit_failures = await _post_completion_audit(config)
+            if not audit_failures:
+                # All checks passed — truly done
+                if last_done_event:
+                    yield last_done_event
+                return
+            else:
+                # Agent lied or missed something — override and continue
+                yield {
+                    "type": "continue",
+                    "iteration": iteration + 1,
+                    "max": MAX_LOOP_ITERATIONS,
+                    "audit_failures": audit_failures,
+                }
+                # Override STATUS to IN_PROGRESS
+                _override_progress_status(config, audit_failures)
+                continue
 
         # Not complete — check if we have iterations remaining
         if iteration >= MAX_LOOP_ITERATIONS:
@@ -387,7 +432,7 @@ async def run_agent_loop(instruction: str, config: ShipyardConfig):
                 yield last_done_event
             return
 
-        # Yield continue event and loop
+        # Yield continue event and loop (normal case — agent didn't claim complete)
         yield {
             "type": "continue",
             "iteration": iteration + 1,

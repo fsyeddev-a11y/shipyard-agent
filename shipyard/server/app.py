@@ -129,12 +129,15 @@ async def instruct(request: InstructRequest):
                     }
 
                 elif event_type == "continue":
+                    evt_data = {
+                        "iteration": event.get("iteration", 0),
+                        "max": event.get("max", 10),
+                    }
+                    if event.get("audit_failures"):
+                        evt_data["audit_failures"] = event["audit_failures"]
                     yield {
                         "event": "continue",
-                        "data": json.dumps({
-                            "iteration": event.get("iteration", 0),
-                            "max": event.get("max", 10),
-                        })
+                        "data": json.dumps(evt_data),
                     }
 
                 elif event_type == "error":
