@@ -8,7 +8,7 @@ from shipyard.tools.edit_file import edit_file, edit_file_multi, EditFileInput, 
 from shipyard.tools.create_file import create_file, CreateFileInput
 from shipyard.tools.list_files import list_files, ListFilesInput
 from shipyard.tools.search_files import search_files, SearchFilesInput
-from shipyard.tools.run_command import run_command, RunCommandInput
+from shipyard.tools.run_command import run_command, stop_background, RunCommandInput, StopBackgroundInput
 from shipyard.tools.move_file import move_file, MoveFileInput
 from shipyard.tools.delete_file import delete_file, DeleteFileInput
 from shipyard.tools.notes import write_note, append_note, read_notes, WriteNoteInput, AppendNoteInput, ReadNotesInput
@@ -79,9 +79,15 @@ class ToolRegistry:
             ),
             self._make_tool(
                 "run_command",
-                "Execute a shell command and return stdout/stderr. Output is truncated if longer than 200 lines.",
+                "Execute a shell command. Set background=true for servers that run forever — returns PID and initial output. Use stop_background to kill background processes.",
                 run_command,
                 RunCommandInput,
+            ),
+            self._make_tool(
+                "stop_background",
+                "Stop a background process by PID. Use after testing a server started with run_command(background=true).",
+                stop_background,
+                StopBackgroundInput,
             ),
             self._make_tool(
                 "move_file",
