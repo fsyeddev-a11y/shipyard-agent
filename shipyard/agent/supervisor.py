@@ -4,9 +4,19 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 
+import asyncio
+import json
 import uuid
 
 from shipyard.agent.llm import get_llm
+from shipyard.agent.state import (
+    OrchestratorState,
+    Subtask,
+    DecompositionResult,
+    TaskMode,
+    WorkerResult,
+    WorkerPhase,
+)
 from shipyard.tools.registry import ToolRegistry
 from shipyard.config import ShipyardConfig
 from shipyard.session.manager import SessionManager
@@ -98,9 +108,13 @@ SYSTEM_PROMPT = """You are Shipyard, an autonomous coding agent. You make surgic
     This line is read by the auto-continue system. If you omit it, the system assumes IN_PROGRESS and will re-run you.
 30. BEFORE writing STATUS: COMPLETE, you MUST call verify_checklist. This tool checks that all files from your plan exist, servers start without crashing, and API endpoints respond. If any check fails, fix the issues first. Do NOT write STATUS: COMPLETE if verify_checklist reports failures.
 
+## Reference Documents
+31. Planning documents, specs, schemas, and PRDs may be in .shipyard/specs/, .shipyard/context/, docs/, or the project root. If you need reference material and can't find it, check ALL of these directories with read_file or list_files.
+32. When the PRD or spec specifies package versions, install EXACT versions: `npm install express@4.21.2` not `npm install express`. Always include the @version suffix. Do NOT install latest — use the version from the spec.
+
 ## Finishing
-31. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
-32. When all implementation is truly complete: call verify_checklist → fix any failures → then write STATUS: COMPLETE to progress.md and stop.
+33. Planning is NOT the end of the task. After writing a plan, IMMEDIATELY start implementing it. Only stop when all specs are implemented, or you run out of message budget.
+34. When all implementation is truly complete: call verify_checklist → fix any failures → then write STATUS: COMPLETE to progress.md and stop.
 
 Project root: {project_root}
 """
@@ -319,18 +333,92 @@ def _is_complete(progress_content: str) -> bool:
     return "STATUS: COMPLETE" in progress_content
 
 
+def _save_context_files(config: ShipyardConfig, instruction: str) -> list[str]:
+    """
+    Extract context file contents from instruction and save to .shipyard/context/.
+    Returns list of saved file paths (relative to project root).
+
+    Context is appended by the CLI/server in this format:
+    ---
+    Attached context:
+    <file contents>
+    ---
+    <file contents>
+    """
+    context_dir = config.shipyard_path / "context"
+    context_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+
+    if "---\nAttached context:\n" not in instruction:
+        return saved
+
+    # Split out context block
+    parts = instruction.split("---\nAttached context:\n", 1)
+    if len(parts) < 2:
+        return saved
+
+    context_block = parts[1]
+    # Each context file is separated by \n---\n
+    chunks = context_block.split("\n---\n")
+
+    for i, chunk in enumerate(chunks):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        # Try to detect filename from first line (e.g., "# SHIP-PRD.md")
+        first_line = chunk.split("\n")[0]
+        if first_line.startswith("# ") and ("." in first_line):
+            # Extract filename from markdown header
+            fname = first_line.lstrip("# ").strip().split(" ")[0]
+            # Clean filename: "SHIP-PRD.md" -> keep, "—" and other chars -> strip
+            fname = fname.split("—")[0].strip()
+        else:
+            fname = f"context_{i}.md"
+
+        filepath = context_dir / fname
+        filepath.write_text(chunk, encoding="utf-8")
+        saved.append(str(filepath.relative_to(config.project_root)))
+
+    return saved
+
+
+def _get_context_file_listing(config: ShipyardConfig) -> str:
+    """List saved context files for the continue message."""
+    context_dir = config.shipyard_path / "context"
+    if not context_dir.exists():
+        return ""
+
+    files = sorted(context_dir.glob("*.md"))
+    if not files:
+        return ""
+
+    listing = "## Reference documents (saved from original context)\n"
+    listing += "Read these files for specs, schemas, wireframes, and PRD details:\n"
+    for f in files:
+        rel = f.relative_to(config.project_root)
+        listing += f"- {rel}\n"
+    return listing
+
+
 def _build_continue_message(
     original_instruction: str,
     progress_content: str,
     iteration: int,
+    config: ShipyardConfig | None = None,
 ) -> str:
     """Build a deterministic continue message. No LLM call — pure string construction."""
+    context_listing = ""
+    if config:
+        context_listing = _get_context_file_listing(config)
+
     return (
         f"Continue working on the original task. This is auto-continue iteration {iteration}.\n\n"
-        f"## Original instruction\n{original_instruction[:500]}\n\n"
+        f"## Original instruction\n{original_instruction[:2000]}\n\n"
+        f"{context_listing}\n\n"
         f"## Current progress (from .shipyard/notes/progress.md)\n{progress_content}\n\n"
-        "Resume from where you left off. Read .shipyard/notes/plan.md and progress.md for context, "
-        "then continue implementing the next incomplete spec. Do NOT re-plan or re-do completed work. "
+        "Resume from where you left off. Read .shipyard/notes/plan.md and progress.md for context. "
+        "If you need spec details, read the reference documents listed above. "
+        "Do NOT re-plan or re-do completed work. "
         "When ALL work is complete, update progress.md with STATUS: COMPLETE on its own line at the end."
     )
 
@@ -387,12 +475,16 @@ async def run_agent_loop(instruction: str, config: ShipyardConfig):
         # Determine the instruction for this iteration
         if iteration == 1:
             current_instruction = instruction
+            # Save context files from the instruction to disk so they persist
+            # across auto-continue iterations
+            _save_context_files(config, instruction)
         else:
             progress_content = _read_progress_file(config)
             current_instruction = _build_continue_message(
                 original_instruction=instruction,
                 progress_content=progress_content,
                 iteration=iteration,
+                config=config,
             )
 
         # Run the agent for this iteration
@@ -438,3 +530,318 @@ async def run_agent_loop(instruction: str, config: ShipyardConfig):
             "iteration": iteration + 1,
             "max": MAX_LOOP_ITERATIONS,
         }
+
+
+# --- Multi-Agent Orchestration ---
+
+DECOMPOSE_PROMPT = """You are the Shipyard supervisor. Analyze this instruction and decide how to execute it.
+
+If the task involves 2+ independent files that can be edited in parallel, decompose into subtasks.
+If the task is simple (single file or tightly coupled changes), use direct mode.
+
+Respond with valid JSON only:
+{{
+  "mode": "direct" | "parallel",
+  "reasoning": "why you chose this mode",
+  "subtasks": [
+    {{
+      "id": "unique-id",
+      "instruction": "what this worker should do",
+      "files_owned": ["path/to/file1.ts", "path/to/file2.ts"],
+      "files_readable": ["path/to/shared.ts"]
+    }}
+  ],
+  "shared_files": ["files no worker owns"]
+}}
+
+For "direct" mode, subtasks should be empty.
+For "parallel" mode, ensure NO file appears in two workers' files_owned.
+
+Project root: {project_root}
+
+File listing:
+{file_listing}
+"""
+
+
+async def decompose_task(
+    instruction: str,
+    config: ShipyardConfig,
+) -> DecompositionResult:
+    """
+    Use the LLM to decompose an instruction into subtasks.
+
+    The LLM decides whether to use direct mode (single agent)
+    or parallel mode (multiple workers).
+
+    Args:
+        instruction: User's instruction
+        config: ShipyardConfig
+
+    Returns:
+        DecompositionResult with mode and subtasks
+    """
+    from shipyard.tools.list_files import list_files
+
+    # Get project file listing for context
+    file_listing = await list_files(
+        directory=".",
+        depth=3,
+        project_root=config.project_root,
+    )
+
+    llm = get_llm(config)
+    messages = [
+        SystemMessage(content=DECOMPOSE_PROMPT.format(
+            project_root=str(config.project_root),
+            file_listing=file_listing[:3000],
+        )),
+        HumanMessage(content=instruction),
+    ]
+
+    response = await llm.ainvoke(messages)
+    response_text = response.content
+
+    # Parse JSON from response
+    try:
+        # Try to extract JSON from the response
+        json_str = response_text
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+
+        data = json.loads(json_str.strip())
+
+        mode = TaskMode(data.get("mode", "direct"))
+        subtasks = [
+            Subtask(
+                id=st.get("id", f"task-{i}"),
+                instruction=st.get("instruction", ""),
+                files_owned=st.get("files_owned", []),
+                files_readable=st.get("files_readable", []),
+            )
+            for i, st in enumerate(data.get("subtasks", []))
+        ]
+        shared_files = data.get("shared_files", [])
+        reasoning = data.get("reasoning", "")
+
+        return DecompositionResult(
+            mode=mode,
+            subtasks=subtasks,
+            shared_files=shared_files,
+            reasoning=reasoning,
+        )
+
+    except (json.JSONDecodeError, ValueError, KeyError):
+        # If parsing fails, fall back to direct mode
+        return DecompositionResult(
+            mode=TaskMode.DIRECT,
+            subtasks=[],
+            shared_files=[],
+            reasoning="Failed to parse decomposition — falling back to direct mode",
+        )
+
+
+async def run_multi_agent(instruction: str, config: ShipyardConfig):
+    """
+    Multi-agent execution flow:
+    1. Decompose instruction into subtasks
+    2. If direct mode, fall through to run_agent (single-agent)
+    3. If parallel mode:
+       a. Dispatch workers via asyncio.gather
+       b. Run merge agent for shared file edits
+       c. Run project-wide validation
+       d. Report results (or replan on failure)
+
+    Yields same event types as run_agent, plus:
+    - {"type": "decompose", "mode": "...", "subtasks": [...]}
+    - {"type": "worker_start", "worker_id": "...", "instruction": "..."}
+    - {"type": "worker_done", "worker_id": "...", "success": bool}
+    - {"type": "merge", "results": {...}}
+    - {"type": "validation", "passed": bool, "errors": [...]}
+
+    Args:
+        instruction: User's instruction
+        config: ShipyardConfig
+
+    Yields:
+        Dict events for streaming
+    """
+    # Step 1: Decompose
+    yield {"type": "status", "message": "Decomposing task..."}
+    decomposition = await decompose_task(instruction, config)
+
+    yield {
+        "type": "decompose",
+        "mode": decomposition.mode.value,
+        "subtasks": [st.model_dump() for st in decomposition.subtasks],
+        "shared_files": decomposition.shared_files,
+        "reasoning": decomposition.reasoning,
+    }
+
+    # Step 2: Direct mode — fall through to single-agent
+    if decomposition.mode == TaskMode.DIRECT or not decomposition.subtasks:
+        yield {"type": "status", "message": "Using direct mode (single agent)"}
+        async for event in run_agent_loop(instruction, config):
+            yield event
+        return
+
+    # Step 3: Parallel mode — dispatch workers
+    yield {
+        "type": "status",
+        "message": f"Dispatching {len(decomposition.subtasks)} workers in parallel",
+    }
+
+    orchestrator_state = OrchestratorState()
+
+    # Import worker
+    from shipyard.agent.worker import run_worker
+
+    # Create worker coroutines
+    worker_tasks = []
+    for subtask in decomposition.subtasks:
+        yield {
+            "type": "worker_start",
+            "worker_id": subtask.id,
+            "instruction": subtask.instruction[:200],
+            "files_owned": subtask.files_owned,
+        }
+
+        worker_tasks.append(
+            run_worker(
+                subtask_instruction=subtask.instruction,
+                config=config,
+                orchestrator_state=orchestrator_state,
+                worker_id=subtask.id,
+                files_owned=subtask.files_owned,
+                files_readable=subtask.files_readable,
+            )
+        )
+
+    # Dispatch all workers in parallel
+    worker_results: list[WorkerResult] = await asyncio.gather(
+        *worker_tasks,
+        return_exceptions=True,
+    )
+
+    # Report worker results
+    all_success = True
+    for result in worker_results:
+        if isinstance(result, Exception):
+            yield {
+                "type": "worker_done",
+                "worker_id": "unknown",
+                "success": False,
+                "error": str(result),
+            }
+            all_success = False
+        else:
+            yield {
+                "type": "worker_done",
+                "worker_id": result.worker_id,
+                "success": result.success,
+                "files_modified": result.files_modified,
+                "error": result.error,
+            }
+            if not result.success:
+                all_success = False
+
+    # Step 4: Merge agent — apply shared file edits
+    if orchestrator_state.change_requests:
+        yield {
+            "type": "status",
+            "message": f"Running merge agent for {len(orchestrator_state.change_requests)} shared file edits",
+        }
+
+        from shipyard.agent.merge_agent import run_merge_agent
+        merge_results = await run_merge_agent(config, orchestrator_state)
+
+        yield {
+            "type": "merge",
+            "results": {
+                path: messages for path, messages in merge_results.items()
+            },
+        }
+    else:
+        yield {"type": "status", "message": "No shared file edits to merge"}
+
+    # Step 5: Project-wide validation
+    yield {"type": "status", "message": "Running project-wide validation..."}
+    validation_passed, validation_errors = await _validate_project(config)
+
+    yield {
+        "type": "validation",
+        "passed": validation_passed,
+        "errors": validation_errors,
+    }
+
+    # Step 6: Report
+    if validation_passed and all_success:
+        yield {
+            "type": "done",
+            "session_id": "",
+            "message": "Multi-agent task completed successfully",
+        }
+    else:
+        # Collect all errors for reporting
+        errors = validation_errors[:]
+        for result in worker_results:
+            if isinstance(result, WorkerResult) and result.error:
+                errors.append(f"Worker {result.worker_id}: {result.error}")
+
+        yield {
+            "type": "done",
+            "session_id": "",
+            "message": f"Multi-agent task completed with errors: {'; '.join(errors[:5])}",
+            "errors": errors,
+        }
+
+
+async def _validate_project(config: ShipyardConfig) -> tuple[bool, list[str]]:
+    """
+    Run project-wide validation after all workers and merge complete.
+
+    Tries to run TypeScript type checking if the project has a tsconfig.json.
+    Falls back to basic file existence checks.
+
+    Returns:
+        (passed: bool, errors: list[str])
+    """
+    from shipyard.tools.run_command import run_command
+    from pathlib import Path
+
+    errors = []
+    project_root = config.project_root
+
+    # Check for TypeScript project
+    tsconfig = Path(project_root) / "tsconfig.json"
+    if tsconfig.exists():
+        result = await run_command(
+            command="npx tsc --noEmit 2>&1 || true",
+            working_directory=".",
+            project_root=project_root,
+        )
+        if "error TS" in result:
+            # Extract TypeScript errors
+            for line in result.split("\n"):
+                if "error TS" in line:
+                    errors.append(line.strip())
+
+    # Check package.json workspaces for monorepo
+    pkg_json = Path(project_root) / "package.json"
+    if pkg_json.exists():
+        try:
+            pkg = json.loads(pkg_json.read_text())
+            if "workspaces" in pkg:
+                # Check each workspace has its package.json
+                for ws in pkg["workspaces"]:
+                    ws_path = Path(project_root) / ws.rstrip("/*")
+                    if ws_path.is_dir():
+                        ws_pkg = ws_path / "package.json"
+                        if not ws_pkg.exists():
+                            errors.append(f"Workspace {ws} missing package.json")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return len(errors) == 0, errors

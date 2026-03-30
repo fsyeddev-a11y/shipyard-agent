@@ -816,15 +816,113 @@ Model impact:   switching gpt-4o → gpt-5.4 = ~75% of the improvement
 Tooling impact: system prompt + tools = ~25% of the improvement
 ```
 
-## Comparison Template (for final submission)
+---
 
-After each build iteration, fill in:
+## Build 7: Ship Rebuild — Full PRD-Driven Autonomous Build
+
+**Date:** 2026-03-30
+**Project:** ship-app — Ship project management tool (PostgreSQL + Express + React + Vite + Tailwind)
+**Model:** gpt-4.1
+**PRD:** ship_rebuild/SHIP-PRD.md (14 specs, 4 context files attached)
+**Mode:** Single autonomous prompt with auto-continue (10 iterations max)
+
+### Changes Since Build 6
+
+- **New planning docs:** Full PRD, DATA-MODELS.md, SPECS.md (14 ordered specs with dependencies), WIREFRAMES.md, USER-STORIES.md
+- **PostgreSQL** instead of sql.js (real database, matching original Ship app)
+- **Context file injection** — all 4 planning docs attached via `-c` flag
+- **Spec docs placed in `.shipyard/specs/`** — agent needed to discover them
+
+### Results
+
+Agent completed **2 of 14 specs** before getting permanently blocked.
+
+| Spec | Status | Notes |
+|------|--------|-------|
+| 1. Monorepo scaffolding | **DONE** | npm workspaces, 3 packages, configs, Vite, Tailwind |
+| 2. Shared types | **DONE** | 123 lines, all interfaces, enums, generics. TypeScript compiled clean. |
+| 3. Database setup | **BLOCKED** | Agent searched for DATA-MODELS.md in root, not found in `.shipyard/specs/` |
+| 4-14 | **NOT STARTED** | Blocked by Spec 3 |
+
+### What Was Built
+
+| Component | Files | Lines | Quality |
+|-----------|-------|-------|---------|
+| Root config | 3 | 25 | Correct |
+| API package | 3 | 35 | Placeholder (health check only) |
+| Web package | 8 | 82 | Placeholder (empty React shell) |
+| Shared types | 1 | 123 | **Complete and correct** |
+| Config files | 12 | 121 | Mostly correct |
+| **Total** | **27** | **327** | Incomplete |
+
+### Blocking Issue: Agent Could Not Find Spec Documents
+
+The agent was told to "Read ALL attached documents" — the 4 context files were injected into the instruction via `-c`. The agent used them for Specs 1-2. But when resuming for Spec 3 (auto-continue iteration), it searched the filesystem for `DATA-MODELS.md` and `SPECS.md` using `search_files` in the project root. The files exist in `.shipyard/specs/` but the agent's search didn't find them there.
+
+The agent correctly identified the blocker, documented it in `.shipyard/notes/issues.md`, and stopped — but it burned all 10 auto-continue iterations searching instead of trying alternative search strategies.
+
+**Root cause:** Context files attached via `-c` are injected into the first instruction's message. On auto-continue, the continue message references the original instruction but the full context isn't re-injected. The agent then tries to find the docs on disk but doesn't search `.shipyard/specs/`.
+
+### Dependency Version Mismatches
+
+| Package | PRD Specified | Agent Installed | Issue |
+|---------|-------------|-----------------|-------|
+| express | 4.21.2 | 5.2.1 | Major version jump, API differences |
+| react | 18.3.1 | 19.2.4 | Major version jump |
+| react-dom | 18.3.1 | 19.2.4 | Major version jump |
+| tailwindcss | 3.4.17 | 4.2.2 | Major version, different config format |
+| vite | 6.0.5 | 5.4.14 | Downgraded (correct direction, wrong target) |
+| typescript | 5.7.2 | 6.0.2 | Major version jump |
+
+Agent ignored pinned versions from the PRD and installed latest versions for most packages.
+
+### Interventions
+
+| # | What Happened | Action Needed |
+|---|--------------|---------------|
+| 1 | Agent blocked on Spec 3 — can't find spec docs | Need to either: re-inject context on continue, or copy docs to project root |
+| 2 | Wrong dependency versions installed | Need to pin versions or reinstall |
+
+### What the Agent Did Well
+
+- **Thorough planning:** Wrote a detailed 14-spec plan to `.shipyard/notes/plan.md` before coding
+- **Progress tracking:** Used `append_note` for timestamped progress entries
+- **Issue documentation:** Correctly identified the blocker and wrote it to `issues.md`
+- **Shared types quality:** The 123-line types file was comprehensive — generics, discriminated unions, type aliases, all property interfaces
+- **Project structure:** Correct monorepo with workspace references, composite tsconfigs
+
+### Build 7 Summary
+
+| Metric | Build 6 (Helm) | Build 7 (Ship) | Change |
+|--------|----------------|-----------------|--------|
+| Model | gpt-5.4 | gpt-4.1 | Downgrade |
+| Specs completed | 8/8 | 2/14 | Regression |
+| Interventions | 2 | 2 (blocking) | Same count but fatal |
+| Planning quality | Good | Excellent | Improved |
+| Code quality | Real implementations | Placeholder + types | Regression |
+| Root cause | — | Context not re-injected on auto-continue | New issue |
+
+### Key Takeaway
+
+The autonomous single-prompt approach **failed** because context files attached via `-c` are only available in the first iteration. When auto-continue re-invokes the agent, the full PRD/schema/spec content isn't in the message — only a reference to it. The agent then tries to find the docs on disk but searches the wrong directory.
+
+**Fix needed:** Either:
+1. Copy spec files to project root (not `.shipyard/specs/`) so `search_files` finds them
+2. Modify auto-continue to re-inject context files on each iteration
+3. Use step-by-step prompts (each with `-c` flags) instead of single autonomous prompt
+4. Add a system prompt rule: "Spec documents are always in `.shipyard/specs/`. Check there first."
+
+---
+
+## Full Build Comparison: Build 1 → Build 7
 
 ```
-Build N vs Build N-1:
-- Interventions: X → Y (change%)
-- Prompts sent: X → Y
-- Recurring issues resolved: [list]
-- New issues found: [list]
-- Cost: $X → $Y
+Build 1 (gpt-4o, no tooling):     16 interventions, placeholder code, 8 manual prompts
+Build 2 (gpt-4o, system prompt):   9 interventions, real code after fixes
+Build 4 (gpt-4o, auto-continue):   8 interventions, auto-continue worked, still needed fixes
+Build 5 (gpt-4o, all features):    4 interventions, but placeholder implementations
+Build 6 (gpt-5.4, all features):   2 interventions, real code on first attempt
+Build 7 (gpt-4.1, ship rebuild):   2 interventions (fatal), blocked at spec 3 of 14
 ```
+
+Build 7 reveals a new class of failure: **context persistence across auto-continue iterations**. The agent's planning and documentation were the best yet, but it couldn't access the information it needed after the first iteration.

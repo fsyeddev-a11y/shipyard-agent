@@ -368,6 +368,74 @@ Track recurring agent behavior problems here. Each entry is a candidate for a sy
 
 ---
 
+## Context Lost on Auto-Continue Iterations
+
+**Issue:** When context files are attached via the `-c` flag, they are injected into the first instruction only. On auto-continue iterations, the continue message references the original instruction but does NOT re-inject the full context file contents. The agent then tries to find the documents on disk but fails.
+
+**Examples:**
+- Build 7: Agent received 4 context files (SHIP-PRD.md, DATA-MODELS.md, SPECS.md, WIREFRAMES.md) and used them successfully for Specs 1-2. On auto-continue iteration 2+, it searched for `DATA-MODELS.md` via `search_files` — not found because files are in `.shipyard/specs/` and the search didn't look there. Burned all 10 iterations searching.
+
+**Occurrences:** Build 7 (Ship rebuild) — first autonomous single-prompt build with context files
+
+**Root cause:** `_build_continue_message()` in `supervisor.py` constructs the continue message from the original instruction text (truncated to 500 chars) + progress.md content. It does NOT include the original context file contents. The context is in the first message of the first iteration's conversation but not persisted to subsequent iterations.
+
+**Proposed fix (short-term):**
+1. System prompt rule: "Planning documents and specs are ALWAYS in `.shipyard/specs/` or `.shipyard/notes/`. When you need reference material, check these directories first."
+2. Copy spec files to project root so `search_files` finds them at top level.
+
+**Proposed fix (long-term):**
+1. Modify `_build_continue_message()` to re-inject context files from the original instruction.
+2. Store attached context in `.shipyard/context/` on first iteration so it's discoverable on disk for subsequent iterations.
+3. Add context file paths to the continue message: "Reference documents available at: .shipyard/specs/SHIP-PRD.md, .shipyard/specs/DATA-MODELS.md, etc."
+
+**Severity:** CRITICAL — this completely blocks autonomous multi-spec builds with context injection.
+
+---
+
+## Agent Ignores Pinned Dependency Versions
+
+**Issue:** The PRD specifies exact package versions (e.g., `express@4.21.2`, `react@18.3.1`) but the agent installs latest versions instead. This causes compatibility issues and breaks assumptions in the spec documents.
+
+**Examples:**
+- Build 7: PRD specifies `express@4.21.2`, agent installed `express@5.2.1` (major version jump, different API)
+- Build 7: PRD specifies `react@18.3.1`, agent installed `react@19.2.4`
+- Build 7: PRD specifies `tailwindcss@3.4.17`, agent installed `tailwindcss@4.2.2` (different config format)
+- Build 7: PRD specifies `typescript@5.7.2`, agent installed `typescript@6.0.2`
+
+**Occurrences:** Build 7 — all packages
+
+**Root cause:** Agent runs `npm install <package>` without version specifiers. npm defaults to latest. The agent reads the version table in the PRD but doesn't use the versions when running install commands.
+
+**Proposed fix:**
+1. System prompt rule: "When the PRD or spec specifies package versions, install EXACT versions: `npm install express@4.21.2` not `npm install express`. Always include the @version suffix."
+2. Include install commands with versions directly in the spec files so the agent can copy-paste them.
+3. Provide a pre-built package.json in the specs so the agent can create it directly rather than running npm install commands.
+
+**Severity:** HIGH — wrong major versions cause cascading failures (Express 5 has different middleware API, React 19 has different rendering, Tailwind 4 has different config).
+
+---
+
+## Agent Search Doesn't Find Files in Subdirectories
+
+**Issue:** When the agent uses `search_files` to find a document, it searches the project root but doesn't find files nested in subdirectories like `.shipyard/specs/`. The agent doesn't try recursive search or alternative directory paths.
+
+**Examples:**
+- Build 7: Agent searched for "DATA-MODELS" and "SPECS.md" — returned no results. Files existed at `.shipyard/specs/DATA-MODELS.md` and `.shipyard/specs/SPECS.md`.
+- Agent tried `search_files(pattern="DATA-MODELS")`, `search_files(pattern="SPECS.md")`, `list_files(depth=2)` — none found the `.shipyard/specs/` directory contents.
+
+**Occurrences:** Build 7 — iterations 2-10 (all blocked on this)
+
+**Root cause:** `list_files` skips `.shipyard/` directory by default (it's in the excluded directories list alongside `.git` and `node_modules`). `search_files` similarly doesn't search hidden/excluded directories. The agent has no way to discover files in `.shipyard/` without explicitly knowing to look there.
+
+**Proposed fix:**
+1. Don't put spec files in `.shipyard/` — put them in a visible directory like `docs/` or `specs/` at project root.
+2. Modify `list_files` to include `.shipyard/specs/` in its output (exclude `.shipyard/sessions/` but show `.shipyard/notes/` and `.shipyard/specs/`).
+3. System prompt rule: "Reference documents may be in `.shipyard/specs/`, `docs/`, or the project root. Check all three locations."
+
+**Severity:** HIGH — agent can't access its own planning documents.
+
+---
+
 ## Template
 
 Copy this for new entries:

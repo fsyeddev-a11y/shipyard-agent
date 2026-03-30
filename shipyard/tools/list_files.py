@@ -2,7 +2,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-SKIP_DIRS = {".git", ".shipyard", "node_modules", "__pycache__", ".venv"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv"}
+# Note: .shipyard is NOT skipped — agent needs access to specs/, context/, and notes/
+# Only .shipyard/sessions/ generates noise (JSONL logs) but that's manageable
 
 
 class ListFilesInput(BaseModel):
