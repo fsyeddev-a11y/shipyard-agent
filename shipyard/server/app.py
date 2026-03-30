@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import time
 
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 import json
@@ -271,3 +272,85 @@ async def usage(session_id: str | None = None):
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    """Simple web UI for the Shipyard agent."""
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Shipyard Agent</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,system-ui,sans-serif;background:#0a0a0f;color:#e5e5e5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}
+h1{font-size:2rem;font-weight:700;color:#3b82f6;margin-bottom:.25rem}
+.sub{color:#9ca3af;margin-bottom:2rem}
+.card{background:#111118;border:1px solid #1e1e2e;border-radius:12px;padding:1.5rem;width:100%;max-width:720px;margin-bottom:1rem}
+.status{display:flex;align-items:center;gap:.5rem;margin-bottom:1rem}
+.dot{width:10px;height:10px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+label{display:block;color:#9ca3af;font-size:.875rem;margin-bottom:.5rem}
+textarea{width:100%;background:#0a0a0f;border:1px solid #2e2e3e;border-radius:8px;color:#e5e5e5;padding:.75rem;font-size:.875rem;resize:vertical;min-height:80px}
+button{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:.6rem 1.5rem;font-size:.875rem;cursor:pointer;margin-top:.75rem}
+button:hover{background:#2563eb}
+button:disabled{background:#1e3a5f;cursor:not-allowed}
+#output{background:#0a0a0f;border:1px solid #2e2e3e;border-radius:8px;padding:1rem;max-height:400px;overflow-y:auto;font-family:monospace;font-size:.8rem;white-space:pre-wrap;color:#a3e635;display:none}
+.tool{color:#60a5fa}.error{color:#f87171}.done{color:#22c55e;font-weight:700}
+.info{color:#9ca3af;font-size:.8rem;margin-top:1rem}
+</style>
+</head>
+<body>
+<h1>Shipyard</h1>
+<p class="sub">Autonomous Coding Agent</p>
+<div class="card">
+  <div class="status"><span class="dot"></span> Agent Running</div>
+  <label>API Key</label>
+  <input type="password" id="apiKey" placeholder="X-Shipyard-Key" style="width:100%;background:#0a0a0f;border:1px solid #2e2e3e;border-radius:8px;color:#e5e5e5;padding:.6rem;font-size:.875rem;margin-bottom:1rem">
+  <label>Instruction</label>
+  <textarea id="instruction" placeholder="e.g. Add a logout button to the navbar"></textarea>
+  <button onclick="send()" id="btn">Send Instruction</button>
+</div>
+<div class="card"><div id="output"></div></div>
+<div class="info">
+  Surgical file editing &bull; Multi-agent coordination &bull; Git auto-commit &bull; LangSmith tracing<br>
+  <a href="/docs" style="color:#3b82f6">API Docs</a> &bull; <a href="/health" style="color:#3b82f6">Health Check</a>
+</div>
+<script>
+async function send(){
+  const btn=document.getElementById('btn'),out=document.getElementById('output'),
+    inst=document.getElementById('instruction').value,key=document.getElementById('apiKey').value;
+  if(!inst)return;
+  btn.disabled=true;btn.textContent='Running...';out.style.display='block';out.textContent='';
+  try{
+    const headers={'Content-Type':'application/json'};
+    if(key)headers['X-Shipyard-Key']=key;
+    const res=await fetch('/instruct',{method:'POST',headers,body:JSON.stringify({instruction:inst})});
+    const reader=res.body.getReader(),decoder=new TextDecoder();
+    let buf='';
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      buf+=decoder.decode(value,{stream:true});
+      const lines=buf.split('\\n');buf=lines.pop();
+      for(const line of lines){
+        if(line.startsWith('data:')){
+          try{
+            const d=JSON.parse(line.slice(5));
+            if(d.content)out.textContent+=d.content;
+            else if(d.tool)out.innerHTML+='<span class="tool">\\n['+d.tool+']</span> ';
+            else if(d.output)out.textContent+='\\n→ '+d.output.slice(0,200)+'\\n';
+            else if(d.status==='complete')out.innerHTML+='<span class="done">\\n\\n✓ Done</span>';
+            else if(d.message)out.innerHTML+='<span class="error">\\n'+d.message+'</span>';
+          }catch{}
+        }
+      }
+      out.scrollTop=out.scrollHeight;
+    }
+  }catch(e){out.innerHTML+='<span class="error">Error: '+e.message+'</span>'}
+  btn.disabled=false;btn.textContent='Send Instruction';
+}
+</script>
+</body>
+</html>"""
