@@ -6,7 +6,7 @@ from pathlib import Path
 class ShipyardConfig(BaseSettings):
     """Central configuration for the Shipyard agent."""
 
-    model_config = {"env_prefix": "SHIPYARD_", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "SHIPYARD_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     # Server
     host: str = "127.0.0.1"
@@ -44,6 +44,10 @@ class ShipyardConfig(BaseSettings):
     langsmith_api_key: str = ""
     langsmith_project: str = "shipyard"
     langsmith_tracing: bool = False
+
+    # API Security (for deployed mode)
+    api_secret: str = ""  # If set, all requests must include X-Shipyard-Key header
+    rate_limit_per_hour: int = 5  # Max requests per hour when deployed
 
     @property
     def shipyard_path(self) -> Path:

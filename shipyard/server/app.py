@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 import json
@@ -11,6 +12,9 @@ from shipyard.session.manager import SessionManager
 from shipyard.session.recovery import check_interrupted_sessions
 from shipyard.session.usage import calculate_usage
 from shipyard.tracing import setup_langsmith
+
+# Simple in-memory rate limiter
+_rate_limit_store: dict[str, list[float]] = {}
 
 
 @asynccontextmanager
@@ -37,6 +41,42 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Shipyard", version="0.1.0", lifespan=lifespan)
+
+
+# --- API Key Auth + Rate Limiting Middleware ---
+
+@app.middleware("http")
+async def auth_and_rate_limit(request: Request, call_next):
+    config = get_config()
+
+    # Skip auth for health check
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    # API key check (only if api_secret is configured)
+    if config.api_secret:
+        provided_key = request.headers.get("X-Shipyard-Key", "")
+        if provided_key != config.api_secret:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key. Set X-Shipyard-Key header.")
+
+    # Rate limiting (only if api_secret is configured — i.e., deployed mode)
+    if config.api_secret and request.url.path == "/instruct":
+        now = time.time()
+        hour_ago = now - 3600
+        client = request.client.host if request.client else "unknown"
+
+        if client not in _rate_limit_store:
+            _rate_limit_store[client] = []
+
+        # Clean old entries
+        _rate_limit_store[client] = [t for t in _rate_limit_store[client] if t > hour_ago]
+
+        if len(_rate_limit_store[client]) >= config.rate_limit_per_hour:
+            raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {config.rate_limit_per_hour} requests per hour.")
+
+        _rate_limit_store[client].append(now)
+
+    return await call_next(request)
 
 
 # --- Request/Response Models ---
